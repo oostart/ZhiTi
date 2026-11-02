@@ -125,6 +125,17 @@ export async function initStore(): Promise<void> {
   state.ready = true
 }
 
+export async function reloadStore(): Promise<void> {
+  state.ready = false
+  state.papers = []
+  state.questions = []
+  state.knowledge = []
+  ui.activePaperId = null
+  ui.activeQuestionId = null
+  ui.exportIds = []
+  await initStore()
+}
+
 export async function saveSettings(patch: Partial<AppSettings>): Promise<void> {
   const next: AppSettings = {
     ...state.settings,

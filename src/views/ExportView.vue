@@ -21,6 +21,10 @@ import {
 } from 'lucide-vue-next'
 import { exportQuestions, FORMAT_LABELS, type ExportFormat } from '../utils/exporters'
 import { downloadBlob } from '../utils/image'
+import { blobToBase64 } from '../utils/base64'
+import { writeFileAt } from '../utils/storage'
+import { save } from '@tauri-apps/plugin-dialog'
+import { isTauri } from '@tauri-apps/api/core'
 import { paperOf, state, ui } from '../store'
 import { toast } from '../composables/toast'
 import type { ExportOptions } from '../types'
@@ -164,9 +168,22 @@ async function doExport() {
     await new Promise((resolve) => setTimeout(resolve, 60))
     exportingLabel.value = '正在渲染题目图片与版式…'
     const { blob, filename } = await exportQuestions(format.value, selectedQuestions.value, finalOptions)
-    exportingLabel.value = '正在写入文件…'
-    downloadBlob(blob, filename)
-    toast(`已导出「${filename}」`, 'success', 4000)
+    if (isTauri()) {
+      exportingLabel.value = '请选择保存位置…'
+      const ext = filename.split('.').pop()?.toLowerCase() || 'pdf'
+      const path = await save({
+        defaultPath: filename,
+        filters: [{ name: ext.toUpperCase(), extensions: [ext] }]
+      })
+      if (!path) return
+      exportingLabel.value = '正在写入文件…'
+      await writeFileAt(path, await blobToBase64(blob))
+      toast(`已导出到：${path}`, 'success', 5000)
+    } else {
+      exportingLabel.value = '正在写入文件…'
+      downloadBlob(blob, filename)
+      toast(`已导出「${filename}」`, 'success', 4000)
+    }
   } catch (error) {
     toast('导出失败：' + ((error as Error).message || '未知错误'), 'error', 5200)
   } finally {
@@ -346,7 +363,7 @@ async function doExport() {
       </div>
 
       <div class="hint" style="margin-top: 12px; line-height: 1.7">
-        导出说明：PDF 采用高清排版图输出，中文显示稳定；Word 中题目为图片，可继续编辑标题与答案；PPT 为 16:9 一题一页。
+        导出说明：点击导出会弹出保存位置选择窗口。PDF 采用高清排版图输出，中文显示稳定；Word 中题目为图片，可继续编辑标题与答案；PPT 为 16:9 一题一页。
       </div>
     </aside>
   </div>

@@ -1,7 +1,7 @@
 {
   "name": "study-si",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "description": "AI 智能题库工具 - 面向中小学教师的桌面端题库工具",
   "scripts": {
@@ -12,6 +12,8 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.12.4",
+    "@tauri-apps/plugin-dialog": "^2.8.4",
     "docx": "^9.0.2",
     "jszip": "^3.10.1",
     "lucide-vue-next": "^0.468.0",

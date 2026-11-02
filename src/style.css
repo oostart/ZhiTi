@@ -111,12 +111,12 @@ a {
   width: 34px;
   height: 34px;
   border-radius: 10px;
-  background: linear-gradient(135deg, #6366f1, #4338ca);
+  background: #f7f2e7;
   display: grid;
   place-items: center;
-  color: #fff;
-  font-weight: 700;
-  box-shadow: 0 6px 16px rgba(79, 70, 229, 0.3);
+  object-fit: cover;
+  border: 1px solid rgba(120, 90, 60, 0.14);
+  box-shadow: 0 6px 16px rgba(79, 70, 229, 0.18);
   flex-shrink: 0;
 }
 

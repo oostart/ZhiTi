@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "知题桌面端默认权限",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "dialog:default"]
 }

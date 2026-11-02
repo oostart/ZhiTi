@@ -4,6 +4,7 @@ import {
   Database,
   Eye,
   EyeOff,
+  FolderOpen,
   KeyRound,
   Loader2,
   PlugZap,
@@ -16,19 +17,26 @@ import {
   Trash2,
   X
 } from 'lucide-vue-next'
+import { isTauri } from '@tauri-apps/api/core'
+import { open } from '@tauri-apps/plugin-dialog'
 import AppModal from '../components/AppModal.vue'
-import { addKnowledgePoint, deleteKnowledgePoint, saveSettings, state, ui } from '../store'
+import { addKnowledgePoint, deleteKnowledgePoint, reloadStore, saveSettings, state, ui } from '../store'
 import { db } from '../db'
 import { PROVIDER_PRESETS, testConnection } from '../utils/ai'
+import { changeDataDir, getStorageSize, getStorageState, openDataDir } from '../utils/storage'
 import { toast } from '../composables/toast'
 import { SUBJECTS } from '../types'
 
+const desktop = isTauri()
 const ai = reactive({ ...state.settings.ai })
 const ocrLang = ref(state.settings.ocr.lang)
 const showKey = ref(false)
 const saving = ref(false)
 const testing = ref(false)
 const storageText = ref('')
+const dataDir = ref('')
+const pendingDir = ref('')
+const applyingDir = ref(false)
 
 const knowledgeSubject = ref(SUBJECTS[0])
 const knowledgeName = ref('')
@@ -114,13 +122,68 @@ async function confirmDeleteKnowledge() {
   toast(`已删除知识点「${name}」，相关题目标注已同步移除`, 'success', 2600)
 }
 
+function formatSize(bytes: number): string {
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GB`
+  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(2)} MB`
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`
+  return `${bytes} B`
+}
+
 async function refreshStorage() {
   try {
+    if (desktop) {
+      storageText.value = formatSize(await getStorageSize())
+      return
+    }
     const estimate = await navigator.storage?.estimate?.()
     if (estimate?.usage != null) storageText.value = `${(estimate.usage / 1024 / 1024).toFixed(2)} MB`
     else storageText.value = '未知'
   } catch {
     storageText.value = '未知'
+  }
+}
+
+async function loadStorageInfo() {
+  if (!desktop) {
+    dataDir.value = '浏览器 IndexedDB（开发模式）'
+    return
+  }
+  try {
+    dataDir.value = (await getStorageState()).dataDir
+  } catch (error) {
+    toast('读取数据目录失败：' + ((error as Error).message || '未知错误'), 'error', 4200)
+  }
+}
+
+async function openStorageDir() {
+  try {
+    await openDataDir()
+  } catch (error) {
+    toast('打开目录失败：' + ((error as Error).message || '未知错误'), 'error', 4200)
+  }
+}
+
+async function pickStorageDir() {
+  const dir = await open({ directory: true, multiple: false, defaultPath: dataDir.value })
+  if (typeof dir === 'string' && dir !== dataDir.value) pendingDir.value = dir
+}
+
+async function applyDirChange() {
+  if (!pendingDir.value) return
+  applyingDir.value = true
+  try {
+    const info = await changeDataDir(pendingDir.value)
+    dataDir.value = info.dataDir
+    pendingDir.value = ''
+    await reloadStore()
+    Object.assign(ai, state.settings.ai)
+    ocrLang.value = state.settings.ocr.lang
+    await refreshStorage()
+    toast('数据目录已切换到：' + info.dataDir, 'success', 4200)
+  } catch (error) {
+    toast('切换数据目录失败：' + ((error as Error).message || '未知错误'), 'error', 5200)
+  } finally {
+    applyingDir.value = false
   }
 }
 
@@ -140,6 +203,7 @@ async function clearAllData() {
 }
 
 onMounted(() => {
+  void loadStorageInfo()
   void refreshStorage()
 })
 </script>
@@ -301,8 +365,20 @@ onMounted(() => {
               </div>
             </div>
             <div class="hint" style="margin-top: 10px">
-              所有数据保存在当前设备的浏览器本地数据库（IndexedDB）中，不上传云端。清理浏览器数据会导致题库丢失。
+              {{ desktop ? '所有数据保存在本地文件夹中，不上传云端。备份或迁移时直接复制该目录即可。' : '浏览器开发模式仍使用 IndexedDB，清理浏览器数据会导致题库丢失。' }}
             </div>
+            <div class="divider" />
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px">
+              <div>
+                <div style="font-size: 12.5px; font-weight: 600">数据存放目录</div>
+                <div class="hint" style="margin-top: 2px">题库、原始 PDF 与设置都保存在这里</div>
+              </div>
+              <div v-if="desktop" style="display: flex; gap: 6px">
+                <button class="btn btn-sm" @click="openStorageDir"><FolderOpen :size="13" /> 打开目录</button>
+                <button class="btn btn-sm" @click="pickStorageDir">更改位置</button>
+              </div>
+            </div>
+            <div class="dir-box">{{ dataDir || '—' }}</div>
             <div class="divider" />
             <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px">
               <div>
@@ -333,6 +409,21 @@ onMounted(() => {
       <template #actions>
         <button class="btn" @click="pendingDelete = null">取消</button>
         <button class="btn btn-danger" @click="confirmDeleteKnowledge"><Trash2 :size="14" /> 确认删除</button>
+      </template>
+    </AppModal>
+
+    <AppModal v-if="pendingDir" title="更改数据存放位置？" @close="pendingDir = ''">
+      <template #description>切换后会重新加载该目录中的题库数据。</template>
+      <div class="hint" style="line-height: 1.8">
+        新目录：<strong style="word-break: break-all">{{ pendingDir }}</strong><br />
+        若新目录为空，当前题库与设置会复制过去；若已有知题数据，则切换并加载该目录，原目录数据保留。
+      </div>
+      <template #actions>
+        <button class="btn" :disabled="applyingDir" @click="pendingDir = ''">取消</button>
+        <button class="btn btn-primary" :disabled="applyingDir" @click="applyDirChange">
+          <Loader2 v-if="applyingDir" :size="14" class="spin" />
+          {{ applyingDir ? '正在切换…' : '确认切换' }}
+        </button>
       </template>
     </AppModal>
 
@@ -417,6 +508,18 @@ onMounted(() => {
 }
 .knowledge-row:hover {
   background: #fafbfe;
+}
+.dir-box {
+  margin-top: 8px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  border-radius: 8px;
+  font-family: ui-monospace, monospace;
+  font-size: 11.5px;
+  color: var(--text-2);
+  line-height: 1.6;
+  word-break: break-all;
 }
 .stat-grid {
   display: grid;
