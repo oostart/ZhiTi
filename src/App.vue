@@ -130,14 +130,6 @@ async function confirmSetup() {
 
   <div v-else class="app-shell">
     <aside class="sidebar">
-      <div class="brand">
-        <img class="brand-mark" :src="logoUrl" alt="知题" />
-        <div>
-          <div class="brand-name">知题</div>
-          <div class="brand-sub">AI 智能题库 · v1.0</div>
-        </div>
-      </div>
-
       <div class="nav-section-label">工作台</div>
       <nav>
         <button

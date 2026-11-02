@@ -100,13 +100,6 @@ a {
   padding: 18px 12px 12px;
 }
 
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 4px 10px 20px;
-}
-
 .brand-mark {
   width: 34px;
   height: 34px;
@@ -120,23 +113,11 @@ a {
   flex-shrink: 0;
 }
 
-.brand-name {
-  font-size: 16px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
-}
-
-.brand-sub {
-  font-size: 11px;
-  color: var(--text-3);
-  margin-top: 1px;
-}
-
 .nav-section-label {
   font-size: 11px;
   color: var(--text-3);
   letter-spacing: 1.2px;
-  padding: 10px 12px 6px;
+  padding: 4px 12px 8px;
 }
 
 .nav-item {
