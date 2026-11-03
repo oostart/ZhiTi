@@ -57,7 +57,7 @@ const topbar = computed<{ title: string; subtitle: string }>(() => {
     case 'export':
       return { title: '题目导出', subtitle: ui.exportIds.length ? `已选择 ${ui.exportIds.length} 道题` : '勾选需要导出的题目，选择排版格式' }
     case 'settings':
-      return { title: '设置', subtitle: '配置 AI 接口、OCR 语言与知识点体系' }
+      return { title: '设置', subtitle: '配置 AI 接口与 OCR 文字识别' }
   }
 })
 

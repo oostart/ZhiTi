@@ -39,7 +39,8 @@ export const ui = reactive<UiState>({
   bankKeyword: ''
 })
 
-const seedKnowledge: Record<string, string[]> = {
+/** 旧版本首次启动时写入的预置知识点目录；现在仅用于一次性清理，不再产生新数据 */
+const LEGACY_SEED_KNOWLEDGE: Record<string, string[]> = {
   物理: [
     '运动的描述',
     '匀变速直线运动',
@@ -98,6 +99,21 @@ function withoutId<T extends { id: number }>(value: T): Omit<T, 'id'> {
   return rest
 }
 
+const PRESET_CLEANUP_KEY = 'knowledge-preset-cleanup-v1'
+
+/** 一次性清除旧版本写入、且从未被题目引用的预置知识点 */
+async function cleanupLegacyPresetKnowledge(): Promise<void> {
+  const done = await db.get<{ key: string; value: boolean }>('settings', PRESET_CLEANUP_KEY)
+  if (done?.value) return
+  const presetNames = new Set(Object.values(LEGACY_SEED_KNOWLEDGE).flat())
+  const usedNames = new Set(state.questions.flatMap((q) => q.knowledge))
+  const removable = state.knowledge.filter((k) => presetNames.has(k.name) && !usedNames.has(k.name))
+  for (const row of removable) await db.remove('knowledge', row.id)
+  const removedIds = new Set(removable.map((row) => row.id))
+  state.knowledge = state.knowledge.filter((row) => !removedIds.has(row.id))
+  await db.put('settings', { key: PRESET_CLEANUP_KEY, value: true })
+}
+
 export async function initStore(): Promise<void> {
   if (state.ready) return
   const [papers, questions, knowledge, settings] = await Promise.all([
@@ -111,17 +127,7 @@ export async function initStore(): Promise<void> {
   state.knowledge = knowledge.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
   state.settings = settings ? { ...defaultSettings, ...settings, ai: { ...defaultSettings.ai, ...settings.ai } } : structuredClone(defaultSettings)
 
-  if (state.knowledge.length === 0) {
-    const rows: KnowledgePoint[] = []
-    Object.entries(seedKnowledge).forEach(([subject, names]) => {
-      names.forEach((name) => rows.push({ id: 0, name, parent_id: null, subject }))
-    })
-    for (const row of rows) {
-      const id = await db.put('knowledge', withoutId(row))
-      state.knowledge.push({ ...row, id })
-    }
-    state.knowledge.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
-  }
+  await cleanupLegacyPresetKnowledge()
   state.ready = true
 }
 
@@ -171,6 +177,14 @@ export async function createPaper(input: {
   await repositories.saveFile({ paper_id: id, name: input.source_name ?? `${input.title}.pdf`, data: input.file })
   state.papers.unshift(paper)
   return paper
+}
+
+export async function updatePaper(id: number, patch: Partial<Pick<Paper, 'title' | 'year' | 'subject' | 'grade'>>): Promise<void> {
+  const index = state.papers.findIndex((p) => p.id === id)
+  if (index < 0) return
+  const next: Paper = { ...state.papers[index], ...patch, id }
+  state.papers[index] = next
+  await db.put('papers', next)
 }
 
 export async function deletePaper(paperId: number): Promise<void> {

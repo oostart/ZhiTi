@@ -8,7 +8,6 @@ import {
   ChevronUp,
   Download,
   FileText,
-  FileType2,
   GripVertical,
   Loader2,
   Package,
@@ -57,7 +56,6 @@ const options = reactive<ExportOptions>({
 
 const formats: { key: ExportFormat; label: string; desc: string; icon: typeof FileText }[] = [
   { key: 'pdf', label: FORMAT_LABELS.pdf, desc: '高清排版，是否带答案由下方开关决定', icon: FileText },
-  { key: 'docx', label: FORMAT_LABELS.docx, desc: '可二次编辑，图片与文字均保留', icon: FileType2 },
   { key: 'pptx', label: FORMAT_LABELS.pptx, desc: '一题一页，适合课堂投屏讲解', icon: Presentation },
   { key: 'zip', label: FORMAT_LABELS.zip, desc: '全部题目图片 + 清单，便于归档', icon: Package }
 ]
@@ -424,7 +422,7 @@ async function doExport() {
       </div>
 
       <div class="hint" style="margin-top: 12px; line-height: 1.7">
-        导出说明：点击导出会弹出保存位置选择窗口。PDF 采用高清排版图输出，中文显示稳定；Word 中题目为图片，可继续编辑标题与答案；PPT 为 16:9 一题一页。
+        导出说明：点击导出会弹出保存位置选择窗口。PDF 采用高清排版图输出，中文显示稳定；PPT 为 16:9 一题一页。
       </div>
     </aside>
   </div>

@@ -1,5 +1,4 @@
 import { PDFDocument } from 'pdf-lib'
-import { AlignmentType, Document, ImageRun, Packer, Paragraph, TextRun, PageBreak, convertInchesToTwip } from 'docx'
 import JSZip from 'jszip'
 import PptxGenJS from 'pptxgenjs'
 import type { ExportOptions, Question } from '../types'
@@ -162,84 +161,6 @@ export async function exportPdf(questions: Question[], options: ExportOptions): 
   return { blob: new Blob([bytes as unknown as BlobPart], { type: 'application/pdf' }), filename: `${baseName(options)}.pdf` }
 }
 
-export async function exportDocx(questions: Question[], options: ExportOptions): Promise<{ blob: Blob; filename: string }> {
-  const marginTwip = convertInchesToTwip(options.margin / 25.4)
-  const children: Paragraph[] = []
-
-  if (options.title.trim()) {
-    children.push(
-      new Paragraph({
-        alignment: AlignmentType.CENTER,
-        spacing: { after: 120 },
-        children: [new TextRun({ text: options.title.trim(), bold: true, size: 36, font: '黑体' })]
-      })
-    )
-  }
-  if (options.subtitle.trim()) {
-    children.push(
-      new Paragraph({
-        alignment: AlignmentType.CENTER,
-        spacing: { after: 240 },
-        children: [new TextRun({ text: options.subtitle.trim(), size: 21, color: '666666', font: '宋体' })]
-      })
-    )
-  }
-
-  const contentWidthPx = Math.round(((options.pageSize === 'a4' ? 8.27 : 8.5) * 96) - options.margin * 2 * 96 / 25.4) - 48
-  const maxWidth = Math.max(280, Math.min(620, Math.round(contentWidthPx * Math.min(1, Math.max(0.4, options.scale))))) + 48
-
-  for (let i = 0; i < questions.length; i++) {
-    const question = questions[i]
-    if (!question.image) continue
-    const img = await loadImage(question.image).catch(() => null)
-    if (!img) continue
-    const width = Math.min(maxWidth, img.naturalWidth)
-    const height = Math.round((img.naturalHeight * width) / img.naturalWidth)
-    if (options.onePerPage && i > 0) children.push(new Paragraph({ children: [new PageBreak()] }))
-    const runs: (TextRun | ImageRun)[] = []
-    if (options.showNumber) runs.push(new TextRun({ text: `${i + 1}. `, bold: true, size: 24, font: '宋体' }))
-    runs.push(
-      new ImageRun({
-        type: mimeOf(question.image) === 'image/png' ? 'png' : 'jpg',
-        data: dataUrlToBytes(question.image),
-        transformation: { width, height }
-      })
-    )
-    children.push(new Paragraph({ spacing: { before: 160, after: 100 }, children: runs }))
-    if (options.showAnswer && question.answer.trim()) {
-      children.push(
-        new Paragraph({
-          spacing: { after: 200 },
-          children: [new TextRun({ text: '答案：', bold: true, size: 21, font: '宋体' }), new TextRun({ text: question.answer.trim(), size: 21, font: '宋体' })]
-        })
-      )
-    }
-  }
-
-  const doc = new Document({
-    styles: {
-      default: {
-        document: {
-          run: { font: '宋体', size: 21 }
-        }
-      }
-    },
-    sections: [
-      {
-        properties: {
-          page: {
-            size: options.pageSize === 'a4' ? { width: 11906, height: 16838 } : { width: 12240, height: 15840 },
-            margin: { top: marginTwip, bottom: marginTwip, left: marginTwip, right: marginTwip }
-          }
-        },
-        children
-      }
-    ]
-  })
-  const blob = await Packer.toBlob(doc)
-  return { blob, filename: `${baseName(options)}.docx` }
-}
-
 export async function exportPptx(questions: Question[], options: ExportOptions): Promise<{ blob: Blob; filename: string }> {
   const pptx = new PptxGenJS()
   pptx.layout = 'LAYOUT_16x9'
@@ -322,11 +243,10 @@ export async function exportZip(questions: Question[], options: ExportOptions): 
   return { blob, filename: `${baseName(options)}-素材包.zip` }
 }
 
-export type ExportFormat = 'pdf' | 'docx' | 'pptx' | 'zip'
+export type ExportFormat = 'pdf' | 'pptx' | 'zip'
 
 export const FORMAT_LABELS: Record<ExportFormat, string> = {
   pdf: 'PDF',
-  docx: '可编辑 Word',
   pptx: 'PPT 演示文稿',
   zip: '素材包 ZIP'
 }
@@ -339,8 +259,6 @@ export async function exportQuestions(
   switch (format) {
     case 'pdf':
       return exportPdf(questions, options)
-    case 'docx':
-      return exportDocx(questions, options)
     case 'pptx':
       return exportPptx(questions, options)
     case 'zip':

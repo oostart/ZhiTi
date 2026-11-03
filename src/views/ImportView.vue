@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { computed, reactive, ref, shallowRef } from 'vue'
-import { FileText, Loader2, Scissors, Trash2, UploadCloud, Wand2 } from 'lucide-vue-next'
+import { FileText, Loader2, Pencil, Scissors, Trash2, UploadCloud, Wand2 } from 'lucide-vue-next'
 import { cacheDocument, disposeDocument, readPdfFile, type OpenedPdf } from '../utils/pdf'
-import { createPaper, deletePaper, state, ui } from '../store'
+import { createPaper, deletePaper, state, ui, updatePaper } from '../store'
 import { toast } from '../composables/toast'
 import AppModal from '../components/AppModal.vue'
-import { SUBJECTS, GRADES } from '../types'
+import { SUBJECTS, GRADES, type Paper } from '../types'
 
 const fileInput = ref<HTMLInputElement>()
 const opened = shallowRef<OpenedPdf | null>(null)
@@ -14,8 +14,17 @@ const parsing = ref(false)
 const importing = ref(false)
 const dragging = ref(false)
 const pendingDelete = ref<number | null>(null)
+const editingPaper = ref<Paper | null>(null)
+const savingEdit = ref(false)
 
 const form = reactive({
+  title: '',
+  year: new Date().getFullYear(),
+  subject: '数学',
+  grade: '九年级'
+})
+
+const editForm = reactive({
   title: '',
   year: new Date().getFullYear(),
   subject: '数学',
@@ -98,6 +107,39 @@ async function doImport() {
 function continueCut(paperId: number) {
   ui.activePaperId = paperId
   ui.view = 'cut'
+}
+
+function openEdit(paper: Paper) {
+  editingPaper.value = paper
+  editForm.title = paper.title
+  editForm.year = paper.year
+  editForm.subject = paper.subject
+  editForm.grade = paper.grade
+}
+
+async function saveEdit() {
+  const target = editingPaper.value
+  if (!target) return
+  const title = editForm.title.trim()
+  if (!title) {
+    toast('试卷标题不能为空', 'warning')
+    return
+  }
+  savingEdit.value = true
+  try {
+    await updatePaper(target.id, {
+      title,
+      year: Number(editForm.year) || target.year,
+      subject: editForm.subject,
+      grade: editForm.grade
+    })
+    toast('试卷信息已更新', 'success')
+    editingPaper.value = null
+  } catch (error) {
+    toast('保存失败：' + ((error as Error).message || '未知错误'), 'error')
+  } finally {
+    savingEdit.value = false
+  }
 }
 
 async function confirmDelete() {
@@ -211,6 +253,9 @@ function formatDate(iso: string): string {
                 </div>
               </div>
               <div class="paper-actions">
+                <button class="btn btn-ghost btn-icon" title="编辑试卷信息" @click="openEdit(paper)">
+                  <Pencil :size="14" />
+                </button>
                 <button class="btn btn-sm" @click="continueCut(paper.id)"><Scissors :size="13" /> 切割</button>
                 <button class="btn btn-ghost btn-icon" title="删除试卷" @click="pendingDelete = paper.id">
                   <Trash2 :size="14" />
@@ -234,6 +279,39 @@ function formatDate(iso: string): string {
       <template #actions>
         <button class="btn" @click="pendingDelete = null">取消</button>
         <button class="btn btn-danger" @click="confirmDelete"><Trash2 :size="14" /> 确认删除</button>
+      </template>
+    </AppModal>
+
+    <AppModal v-if="editingPaper" title="编辑试卷信息" @close="editingPaper = null">
+      <template #description>修改仅影响题库中的试卷信息，不会改动原始 PDF 文件。</template>
+      <div class="field">
+        <label class="label">试卷标题<span class="req">*</span></label>
+        <input v-model="editForm.title" class="input" placeholder="试卷标题" />
+      </div>
+      <div class="row-3">
+        <div class="field">
+          <label class="label">年份</label>
+          <input v-model.number="editForm.year" type="number" class="input" min="1990" max="2100" />
+        </div>
+        <div class="field">
+          <label class="label">学科</label>
+          <select v-model="editForm.subject" class="select">
+            <option v-for="s in SUBJECTS" :key="s">{{ s }}</option>
+          </select>
+        </div>
+        <div class="field">
+          <label class="label">年级</label>
+          <select v-model="editForm.grade" class="select">
+            <option v-for="g in GRADES" :key="g">{{ g }}</option>
+          </select>
+        </div>
+      </div>
+      <template #actions>
+        <button class="btn" @click="editingPaper = null">取消</button>
+        <button class="btn btn-primary" :disabled="savingEdit" @click="saveEdit">
+          <Loader2 v-if="savingEdit" :size="14" class="spin" />
+          保存修改
+        </button>
       </template>
     </AppModal>
   </div>

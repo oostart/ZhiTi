@@ -186,6 +186,9 @@ async function saveDraft(silent = false) {
       knowledge: [...current.knowledge],
       analysis: current.analysis
     })
+    for (const name of current.knowledge) {
+      await addKnowledgePoint(name, paperOf(current)?.subject ?? '')
+    }
     dirty.value = false
     if (!silent) toast('已保存题目修改', 'success')
   } catch (error) {
