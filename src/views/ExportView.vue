@@ -41,7 +41,7 @@ const options = reactive<ExportOptions>({
   subtitle: '',
   showAnswer: true,
   onePerPage: false,
-  showNumber: true,
+  showNumber: false,
   pageSize: 'a4',
   margin: 18,
   scale: 1,
@@ -323,7 +323,10 @@ async function doExport() {
         <button class="switch" :class="{ on: options.onePerPage }" @click="options.onePerPage = !options.onePerPage" />
       </div>
       <div class="switch-row">
-        <div>显示题目编号</div>
+        <div>
+          新加题目编号
+          <div class="hint" style="margin-top: 2px">题目无编号可勾选</div>
+        </div>
         <button class="switch" :class="{ on: options.showNumber }" @click="options.showNumber = !options.showNumber" />
       </div>
 
