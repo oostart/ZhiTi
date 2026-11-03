@@ -103,13 +103,9 @@ a {
 .brand-mark {
   width: 34px;
   height: 34px;
-  border-radius: 10px;
-  background: #f7f2e7;
   display: grid;
   place-items: center;
-  object-fit: cover;
-  border: 1px solid rgba(120, 90, 60, 0.14);
-  box-shadow: 0 6px 16px rgba(79, 70, 229, 0.18);
+  object-fit: contain;
   flex-shrink: 0;
 }
 

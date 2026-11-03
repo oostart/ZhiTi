@@ -1,10 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { Download, FilePlus2, Library, Loader2, Scissors, Settings } from 'lucide-vue-next'
+import { Download, FilePlus2, Library, Scissors, Settings } from 'lucide-vue-next'
 import { isTauri } from '@tauri-apps/api/core'
-import { open } from '@tauri-apps/plugin-dialog'
 import ToastHost from './components/ToastHost.vue'
-import AppModal from './components/AppModal.vue'
 import ImportView from './views/ImportView.vue'
 import CutView from './views/CutView.vue'
 import BankView from './views/BankView.vue'
@@ -17,10 +15,6 @@ import logoUrl from './assets/logo.png'
 
 const desktop = isTauri()
 const bootError = ref('')
-const setupOpen = ref(false)
-const defaultDir = ref('')
-const selectedDir = ref('')
-const applyingDir = ref(false)
 const views = {
   import: ImportView,
   cut: CutView,
@@ -78,12 +72,8 @@ onMounted(async () => {
   try {
     if (desktop) {
       const storage = await getStorageState()
-      defaultDir.value = storage.defaultDir
-      selectedDir.value = storage.dataDir || storage.defaultDir
-      if (!storage.configured || !storage.exists) {
-        setupOpen.value = true
-        return
-      }
+      // 首次启动不再弹窗询问，直接以默认目录作为数据目录（静默写入配置，便于后续在设置中切换时迁移数据）
+      if (!storage.configured) await changeDataDir(storage.defaultDir)
     }
     await initStore()
     if (!ui.activePaperId) ui.activePaperId = state.papers[0]?.id ?? null
@@ -92,30 +82,6 @@ onMounted(async () => {
     toast('本地数据库初始化失败：' + bootError.value, 'error')
   }
 })
-
-async function browseDataDir() {
-  const dir = await open({ directory: true, multiple: false, defaultPath: selectedDir.value || defaultDir.value })
-  if (typeof dir === 'string') selectedDir.value = dir
-}
-
-function useDefaultDir() {
-  selectedDir.value = defaultDir.value
-}
-
-async function confirmSetup() {
-  if (!selectedDir.value) return
-  applyingDir.value = true
-  try {
-    await changeDataDir(selectedDir.value)
-    setupOpen.value = false
-    await initStore()
-    if (!ui.activePaperId) ui.activePaperId = state.papers[0]?.id ?? null
-  } catch (error) {
-    toast('数据目录设置失败：' + ((error as Error).message || '未知错误'), 'error', 5200)
-  } finally {
-    applyingDir.value = false
-  }
-}
 </script>
 
 <template>
@@ -173,25 +139,6 @@ async function confirmSetup() {
   </div>
 
   <ToastHost />
-
-  <AppModal v-if="setupOpen" title="选择数据存放位置" :width="560" @close="() => {}">
-    <template #description>题库、原始 PDF 与设置都会保存在该目录，可随时在设置中更改。</template>
-    <div class="field">
-      <label class="label">数据目录</label>
-      <div class="dir-box">{{ selectedDir }}</div>
-    </div>
-    <div style="display: flex; gap: 8px">
-      <button class="btn" @click="browseDataDir">浏览其他目录…</button>
-      <button class="btn" @click="useDefaultDir">使用默认位置</button>
-    </div>
-    <div class="hint" style="margin-top: 10px">默认位置为软件同级目录下的「StudySI数据」文件夹。</div>
-    <template #actions>
-      <button class="btn btn-primary" :disabled="applyingDir || !selectedDir" @click="confirmSetup">
-        <Loader2 v-if="applyingDir" :size="14" class="spin" />
-        {{ applyingDir ? '正在准备数据目录…' : '开始使用' }}
-      </button>
-    </template>
-  </AppModal>
 </template>
 
 <style scoped>
@@ -202,19 +149,5 @@ async function confirmSetup() {
   justify-content: center;
   gap: 14px;
   color: var(--text-2);
-}
-.dir-box {
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  background: var(--surface-2);
-  border-radius: 8px;
-  font-family: ui-monospace, monospace;
-  font-size: 12px;
-  color: var(--text-2);
-  word-break: break-all;
-  line-height: 1.6;
-}
-.spin {
-  animation: spin 0.8s linear infinite;
 }
 </style>
