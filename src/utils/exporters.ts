@@ -322,11 +322,10 @@ export async function exportZip(questions: Question[], options: ExportOptions): 
   return { blob, filename: `${baseName(options)}-素材包.zip` }
 }
 
-export type ExportFormat = 'pdf-student' | 'pdf-teacher' | 'docx' | 'pptx' | 'zip'
+export type ExportFormat = 'pdf' | 'docx' | 'pptx' | 'zip'
 
 export const FORMAT_LABELS: Record<ExportFormat, string> = {
-  'pdf-student': '学生版 PDF',
-  'pdf-teacher': '教师版 PDF',
+  pdf: 'PDF',
   docx: '可编辑 Word',
   pptx: 'PPT 演示文稿',
   zip: '素材包 ZIP'
@@ -338,10 +337,8 @@ export async function exportQuestions(
   options: ExportOptions
 ): Promise<{ blob: Blob; filename: string }> {
   switch (format) {
-    case 'pdf-student':
-      return exportPdf(questions, { ...options, showAnswer: false })
-    case 'pdf-teacher':
-      return exportPdf(questions, { ...options, showAnswer: true })
+    case 'pdf':
+      return exportPdf(questions, options)
     case 'docx':
       return exportDocx(questions, options)
     case 'pptx':

@@ -7,7 +7,6 @@ import {
   ChevronDown,
   ChevronUp,
   Download,
-  FileCheck2,
   FileText,
   FileType2,
   GripVertical,
@@ -16,6 +15,7 @@ import {
   Plus,
   Presentation,
   Search,
+  Sparkles,
   Trash2,
   X
 } from 'lucide-vue-next'
@@ -25,21 +25,28 @@ import { blobToBase64 } from '../utils/base64'
 import { writeFileAt } from '../utils/storage'
 import { save } from '@tauri-apps/plugin-dialog'
 import { isTauri } from '@tauri-apps/api/core'
-import { paperOf, state, ui } from '../store'
+import { paperOf, state, ui, updateQuestion } from '../store'
+import { generateAnswer } from '../utils/ai'
 import { toast } from '../composables/toast'
-import type { ExportOptions } from '../types'
+import AppModal from '../components/AppModal.vue'
+import type { ExportOptions, Question } from '../types'
 
-const format = ref<ExportFormat>('pdf-teacher')
+const format = ref<ExportFormat>('pdf')
 const exporting = ref(false)
 const exportingLabel = ref('')
 const dragIndex = ref<number | null>(null)
 const showLibrary = ref(false)
 const libraryKeyword = ref('')
+const missingOpen = ref(false)
+const missingDrafts = reactive<Record<number, string>>({})
+const missingSaving = ref(false)
+const missingAiId = ref<number | null>(null)
+const missingPreviewId = ref<number | null>(null)
 
 const options = reactive<ExportOptions>({
   title: '',
   subtitle: '',
-  showAnswer: true,
+  showAnswer: false,
   onePerPage: false,
   showNumber: false,
   pageSize: 'a4',
@@ -49,8 +56,7 @@ const options = reactive<ExportOptions>({
 })
 
 const formats: { key: ExportFormat; label: string; desc: string; icon: typeof FileText }[] = [
-  { key: 'pdf-student', label: FORMAT_LABELS['pdf-student'], desc: '无答案，适合打印发放给学生', icon: FileText },
-  { key: 'pdf-teacher', label: FORMAT_LABELS['pdf-teacher'], desc: '题目 + 参考答案，便于讲评', icon: FileCheck2 },
+  { key: 'pdf', label: FORMAT_LABELS.pdf, desc: '高清排版，是否带答案由下方开关决定', icon: FileText },
   { key: 'docx', label: FORMAT_LABELS.docx, desc: '可二次编辑，图片与文字均保留', icon: FileType2 },
   { key: 'pptx', label: FORMAT_LABELS.pptx, desc: '一题一页，适合课堂投屏讲解', icon: Presentation },
   { key: 'zip', label: FORMAT_LABELS.zip, desc: '全部题目图片 + 清单，便于归档', icon: Package }
@@ -71,7 +77,7 @@ const libraryQuestions = computed(() => {
     .slice(0, 80)
 })
 
-const answerToggleDisabled = computed(() => format.value === 'pdf-student')
+const missingQuestions = computed(() => selectedQuestions.value.filter((q) => !q.answer.trim()))
 const totalQuestions = computed(() => state.questions.length)
 
 const defaultTitle = computed(() => {
@@ -105,10 +111,62 @@ watch(
   { immediate: true }
 )
 
-watch(format, (value) => {
-  if (value === 'pdf-student') options.showAnswer = false
-  else options.showAnswer = true
-})
+function toggleAnswers() {
+  options.showAnswer = !options.showAnswer
+  if (options.showAnswer) openMissingAnswers()
+}
+
+function openMissingAnswers() {
+  if (!missingQuestions.value.length) return
+  for (const q of missingQuestions.value) {
+    if (missingDrafts[q.id] == null) missingDrafts[q.id] = q.answer
+  }
+  missingOpen.value = true
+}
+
+async function saveMissingAnswers() {
+  const targets = missingQuestions.value.filter((q) => (missingDrafts[q.id] ?? '').trim())
+  if (!targets.length) {
+    missingOpen.value = false
+    return
+  }
+  missingSaving.value = true
+  try {
+    for (const q of targets) {
+      await updateQuestion(q.id, { answer: missingDrafts[q.id].trim() })
+    }
+    toast(`已保存 ${targets.length} 道题的参考答案`, 'success')
+    missingOpen.value = false
+  } catch (error) {
+    toast('保存答案失败：' + ((error as Error).message || '未知错误'), 'error', 5200)
+  } finally {
+    missingSaving.value = false
+  }
+}
+
+async function generateMissingAnswer(question: Question) {
+  const text = question.ocr_text.trim()
+  if (!text) {
+    toast('该题还没有识别文字，无法生成答案，可先在题库中 OCR', 'warning')
+    return
+  }
+  missingAiId.value = question.id
+  try {
+    const paper = paperOf(question)
+    missingDrafts[question.id] = await generateAnswer(state.settings.ai, {
+      text,
+      subject: paper?.subject ?? '',
+      grade: paper?.grade ?? '',
+      type: question.question_type,
+      answer: missingDrafts[question.id] || ''
+    })
+    toast('AI 已生成答案，请核对后保存', 'success')
+  } catch (error) {
+    toast((error as Error).message || 'AI 调用失败', 'error', 5200)
+  } finally {
+    missingAiId.value = null
+  }
+}
 
 function addQuestion(id: number) {
   if (!ui.exportIds.includes(id)) ui.exportIds = [...ui.exportIds, id]
@@ -313,10 +371,10 @@ async function doExport() {
         <div>
           包含参考答案
           <div class="hint" style="margin-top: 2px">
-            {{ answerToggleDisabled ? '学生版 PDF 固定不含答案' : format === 'zip' ? '答案写入题目清单' : '答案显示在每题下方' }}
+            {{ format === 'zip' ? '答案写入题目清单' : '答案显示在每题下方' }}
           </div>
         </div>
-        <button class="switch" :class="{ on: options.showAnswer }" :disabled="answerToggleDisabled" @click="options.showAnswer = !options.showAnswer" />
+        <button class="switch" :class="{ on: options.showAnswer }" @click="toggleAnswers()" />
       </div>
       <div class="switch-row">
         <div>每题独立一页</div>
@@ -370,6 +428,44 @@ async function doExport() {
       </div>
     </aside>
   </div>
+
+  <AppModal v-if="missingOpen" title="有题目还没有填写参考答案" :width="680" @close="missingOpen = false">
+    <template #description>
+      已勾选「包含参考答案」，以下 {{ missingQuestions.length }} 道题没有答案，导出时会跳过它们的答案。可在下方补写，或用 AI 生成后核对保存。
+    </template>
+
+    <div class="missing-list">
+      <div v-for="q in missingQuestions" :key="q.id" class="missing-row">
+        <div class="missing-head">
+          <button
+            class="missing-thumb"
+            title="查看题目图片"
+            @click="missingPreviewId = missingPreviewId === q.id ? null : q.id"
+          >
+            <img v-if="q.image" :src="q.image" loading="lazy" />
+          </button>
+          <div style="flex: 1; min-width: 0">
+            <div class="missing-text">{{ q.ocr_text || '（无识别文字）' }}</div>
+            <div class="hint" style="font-size: 11px">{{ q.question_type }} · {{ paperOf(q)?.title }}</div>
+          </div>
+          <button class="btn btn-sm" :disabled="missingAiId != null" @click="generateMissingAnswer(q)">
+            <Loader2 v-if="missingAiId === q.id" :size="12" class="spin" />
+            <Sparkles v-else :size="12" /> AI 生成
+          </button>
+        </div>
+        <img v-if="missingPreviewId === q.id && q.image" class="missing-preview" :src="q.image" />
+        <textarea v-model="missingDrafts[q.id]" class="textarea" rows="2" placeholder="填写参考答案…" />
+      </div>
+    </div>
+
+    <template #actions>
+      <button class="btn" @click="missingOpen = false">暂不处理</button>
+      <button class="btn btn-primary" :disabled="missingSaving" @click="saveMissingAnswers">
+        <Loader2 v-if="missingSaving" :size="14" class="spin" />
+        保存并关闭
+      </button>
+    </template>
+  </AppModal>
 </template>
 
 <style scoped>
@@ -596,5 +692,62 @@ async function doExport() {
 }
 .spin {
   animation: spin 0.8s linear infinite;
+}
+.missing-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 56vh;
+  overflow: auto;
+  padding-right: 2px;
+}
+.missing-row {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  background: #fff;
+}
+.missing-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.missing-thumb {
+  width: 48px;
+  height: 54px;
+  border-radius: 5px;
+  overflow: hidden;
+  background: #f5f6fb;
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+  padding: 0;
+  cursor: zoom-in;
+}
+.missing-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top;
+}
+.missing-text {
+  font-size: 12.5px;
+  color: var(--text);
+  line-height: 1.6;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.missing-preview {
+  display: block;
+  width: 100%;
+  max-height: 320px;
+  object-fit: contain;
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #f8f9fc;
 }
 </style>

@@ -66,9 +66,6 @@ watch(keyword, (value) => {
 
 const years = computed(() => Array.from(new Set(state.papers.map((p) => p.year))).sort((a, b) => b - a))
 const knowledgeOptions = computed(() => Array.from(new Set(state.questions.flatMap((q) => q.knowledge))).sort((a, b) => a.localeCompare(b, 'zh-CN')))
-const subjectSuggestions = computed(() =>
-  state.knowledge.filter((k) => k.subject === (activePaper.value?.subject ?? '')).map((k) => k.name)
-)
 
 const filtered = computed(() => {
   const kw = keyword.value.trim().toLowerCase()
@@ -550,13 +547,9 @@ onBeforeUnmount(() => {
             <input
               v-model="knowledgeInput"
               class="input"
-              list="knowledge-suggestions"
-              placeholder="输入或选择知识点，回车添加"
+              placeholder="输入知识点，回车添加"
               @keydown.enter.prevent="addKnowledge()"
             />
-            <datalist id="knowledge-suggestions">
-              <option v-for="name in subjectSuggestions" :key="name" :value="name" />
-            </datalist>
             <button class="btn btn-sm" @click="addKnowledge()">添加</button>
           </div>
         </div>
