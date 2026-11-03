@@ -134,14 +134,13 @@ export async function extractTextFromRegions(paperId: number, doc: PDFDocumentPr
   return blocks.join('\n\n')
 }
 
-/** 根据切割线（归一化 y 值）生成区域 */
+/** 根据切割线（归一化 y 值）生成区域：仅相邻两条切线之间算一题 */
 export function regionsFromCuts(page: number, cuts: number[]): Region[] {
   const sorted = [...cuts].sort((a, b) => a - b)
-  const points = [0.015, ...sorted, 0.985]
   const regions: Region[] = []
-  for (let i = 0; i < points.length - 1; i++) {
-    const top = points[i]
-    const bottom = points[i + 1]
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const top = sorted[i]
+    const bottom = sorted[i + 1]
     if (bottom - top < 0.01) continue
     regions.push({ page, x: 0.02, y: top, w: 0.96, h: bottom - top })
   }

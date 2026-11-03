@@ -49,6 +49,7 @@ const paper = computed(() => state.papers.find((p) => p.id === ui.activePaperId)
 const paperQuestions = computed(() => state.questions.filter((q) => q.paper_id === ui.activePaperId))
 const pageQuestions = computed(() => questionRegionsOnPage())
 const currentCuts = computed(() => cuts[page.value] ?? [])
+const lineQuestionCount = computed(() => Math.max(0, currentCuts.value.length - 1))
 const pendingTarget = computed(() => paperQuestions.value.find((q) => q.id === mergeTargetId.value) ?? null)
 const displayWidth = computed(() => Math.round(baseWidth.value * zoom.value))
 
@@ -264,7 +265,7 @@ async function generateFromCuts() {
   if (!doc.value || !ui.activePaperId) return
   const regions = regionsFromCuts(page.value, cuts[page.value] ?? [])
   if (!regions.length) {
-    toast('请先在页面中画出至少一条切线', 'warning')
+    toast('请先画出至少两条切线，两条切线之间的区域才会切成一题', 'warning')
     return
   }
   generating.value = true
@@ -372,10 +373,10 @@ onBeforeUnmount(() => {
           <button :class="{ active: mode === 'box' }" @click="mode = 'box'; pendingBox = null"><SquareDashed /> 框选模式</button>
         </div>
 
-        <button v-if="mode === 'line'" class="btn btn-primary btn-sm" :disabled="generating || !currentCuts.length" @click="generateFromCuts">
+        <button v-if="mode === 'line'" class="btn btn-primary btn-sm" :disabled="generating || lineQuestionCount === 0" @click="generateFromCuts">
           <Loader2 v-if="generating" :size="13" class="spin" />
           <Scissors v-else :size="13" />
-          生成 {{ currentCuts.length ? currentCuts.length + 1 + ' 道题' : '题目' }}
+          生成 {{ lineQuestionCount ? lineQuestionCount + ' 道题' : '题目' }}
         </button>
       </div>
 
@@ -454,7 +455,7 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="cut-statusbar">
-        <span v-if="mode === 'line'">在页面上单击可添加一条切线，再次单击已有切线可移除；从上到下按切线切分出题目。</span>
+        <span v-if="mode === 'line'">在页面上单击可添加一条切线，再次单击已有切线可移除；只有相邻两条切线之间的区域会切成一题，第一条线之上和最后一条线之下的内容不切割。</span>
         <span v-else>
           按住拖动画框圈住题目内容；同一题跨页或包含多张图时，先「新建题目」，翻页后再框选并「追加到第 N 题」。
         </span>
@@ -491,8 +492,11 @@ onBeforeUnmount(() => {
           <span>本页切线</span>
           <button v-if="currentCuts.length" class="btn btn-ghost btn-sm" @click="clearCuts"><Eraser :size="12" /> 清空</button>
         </div>
-        <div v-if="!currentCuts.length" class="hint">第 {{ page }} 页还没有切线。切换到切线模式后在页面上单击即可添加。</div>
-        <div v-else class="cut-chips">
+        <div v-if="currentCuts.length < 2" class="hint" style="margin-bottom: 8px">
+          <template v-if="!currentCuts.length">第 {{ page }} 页还没有切线。切换到切线模式后在页面上单击即可添加。</template>
+          <template v-else>还需要再画 1 条切线；两条切线之间的区域才会切成一题。</template>
+        </div>
+        <div v-if="currentCuts.length" class="cut-chips">
           <button v-for="(y, i) in currentCuts" :key="i" class="chip" @click="removeCut(y)">切线 {{ i + 1 }} · {{ Math.round(y * 100) }}% ✕</button>
         </div>
       </div>
