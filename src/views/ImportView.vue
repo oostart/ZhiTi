@@ -121,7 +121,7 @@ function formatDate(iso: string): string {
       <div class="hero">
         <div>
           <h1>导入一份 PDF 试卷</h1>
-          <p>系统会解析每一页并生成高清预览，接着用切线或框选把题目切进题库。原始 PDF 保存在本地，可随时继续切割。</p>
+          <p>系统会解析每一页并生成高清预览，接着用框选把题目切进题库。原始 PDF 保存在本地，可随时继续切割。</p>
         </div>
         <div class="hero-badges">
           <span class="chip"><Wand2 :size="12" /> 智能切割</span>

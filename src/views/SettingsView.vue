@@ -395,7 +395,7 @@ onMounted(() => {
             <div class="section-title">关于知题</div>
             <div class="hint" style="line-height: 1.8">
               知题 v1.0 · 面向中小学教师的 AI 智能题库工具。<br />
-              核心能力：PDF 试卷导入、切线/框选切割、跨页合并、OCR 校对、AI 答案与知识点辅助、多维检索、五种格式导出。<br />
+              核心能力：PDF 试卷导入、框选切割、跨页合并、OCR 校对、AI 答案与知识点辅助、多维检索、五种格式导出。<br />
               <span style="color: var(--text-3)">数据仅在本机处理，AI 调用需自行配置接口。</span>
             </div>
           </div>

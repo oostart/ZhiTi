@@ -4,20 +4,18 @@ import type { PDFDocumentProxy } from 'pdfjs-dist'
 import {
   ChevronLeft,
   ChevronRight,
-  Eraser,
   Layers,
   Loader2,
   Merge,
   Plus,
   ScanText,
   Scissors,
-  SquareDashed,
   Trash2,
   ZoomIn,
   ZoomOut
 } from 'lucide-vue-next'
 import { canvasToDataUrl, composeDataUrls, cropCanvas } from '../utils/image'
-import { extractTextFromRegions, getPaperDocument, regionsFromCuts, renderPageToCanvas } from '../utils/pdf'
+import { extractTextFromRegions, getPaperDocument, renderPageToCanvas } from '../utils/pdf'
 import { createQuestion, deleteQuestion, state, ui, updateQuestion } from '../store'
 import { toast } from '../composables/toast'
 import { recognizeImage } from '../utils/ocr'
@@ -32,15 +30,13 @@ const pageCount = ref(0)
 const pageImage = ref('')
 const rendering = ref(false)
 const zoom = ref(1)
-const mode = ref<'line' | 'box'>('line')
-const cuts = reactive<Record<number, number[]>>({})
-const pendingBox = ref<Region | null>(null)
+const draftBox = ref<Region | null>(null)
+const pendingBoxes = ref<Region[]>([])
 const mergeTargetId = ref<number | null>(null)
 const generating = ref(false)
 const ocrProgress = reactive<Record<number, number>>({})
 const baseWidth = ref(780)
 const stageRef = ref<HTMLElement>()
-const hoverY = ref<number | null>(null)
 let dragStart: { x: number; y: number } | null = null
 let renderToken = 0
 let resizeObserver: ResizeObserver | null = null
@@ -48,8 +44,9 @@ let resizeObserver: ResizeObserver | null = null
 const paper = computed(() => state.papers.find((p) => p.id === ui.activePaperId))
 const paperQuestions = computed(() => state.questions.filter((q) => q.paper_id === ui.activePaperId))
 const pageQuestions = computed(() => questionRegionsOnPage())
-const currentCuts = computed(() => cuts[page.value] ?? [])
-const lineQuestionCount = computed(() => Math.max(0, currentCuts.value.length - 1))
+const pendingBoxesOnPage = computed(() =>
+  pendingBoxes.value.map((region, index) => ({ region, index })).filter(({ region }) => region.page === page.value)
+)
 const pendingTarget = computed(() => paperQuestions.value.find((q) => q.id === mergeTargetId.value) ?? null)
 const displayWidth = computed(() => Math.round(baseWidth.value * zoom.value))
 
@@ -66,14 +63,12 @@ function questionRegionsOnPage(): { question: Question; index: number; region: R
 function nextPage() {
   if (page.value < pageCount.value) {
     page.value += 1
-    pendingBox.value = null
   }
 }
 
 function prevPage() {
   if (page.value > 1) {
     page.value -= 1
-    pendingBox.value = null
   }
 }
 
@@ -107,7 +102,8 @@ async function loadDocument() {
     doc.value = document
     pageCount.value = document.numPages
     page.value = 1
-    pendingBox.value = null
+    draftBox.value = null
+    pendingBoxes.value = []
     await renderPreview()
   } catch (error) {
     doc.value = null
@@ -129,30 +125,15 @@ function onPointerDown(event: PointerEvent) {
   if (loading.value || rendering.value || !doc.value) return
   if (event.button !== 0) return
   const point = normalizedPoint(event)
-  if (mode.value === 'line') {
-    if (point.y < 0.03 || point.y > 0.97) return
-    const list = cuts[page.value] ?? (cuts[page.value] = [])
-    const existing = list.find((y) => Math.abs(y - point.y) < 0.015)
-    if (existing != null) {
-      cuts[page.value] = list.filter((y) => y !== existing)
-      toast('已移除该切线', 'info', 1600)
-      return
-    }
-    list.push(point.y)
-    list.sort((a, b) => a - b)
-    cuts[page.value] = [...list]
-    return
-  }
   dragStart = point
-  pendingBox.value = { page: page.value, x: point.x, y: point.y, w: 0, h: 0 }
+  draftBox.value = { page: page.value, x: point.x, y: point.y, w: 0, h: 0 }
   ;(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId)
 }
 
 function onPointerMove(event: PointerEvent) {
+  if (!dragStart) return
   const point = normalizedPoint(event)
-  hoverY.value = mode.value === 'line' ? point.y : null
-  if (mode.value !== 'box' || !dragStart) return
-  pendingBox.value = {
+  draftBox.value = {
     page: page.value,
     x: Math.min(dragStart.x, point.x),
     y: Math.min(dragStart.y, point.y),
@@ -162,13 +143,14 @@ function onPointerMove(event: PointerEvent) {
 }
 
 function onPointerUp(event: PointerEvent) {
-  hoverY.value = null
-  if (mode.value !== 'box' || !dragStart) return
+  if (!dragStart) return
   dragStart = null
-  const box = pendingBox.value
+  const box = draftBox.value
+  draftBox.value = null
   if (box && (box.w < 0.02 || box.h < 0.012)) {
-    pendingBox.value = null
     toast('框选区域过小，请重新框选', 'warning', 1800)
+  } else if (box) {
+    pendingBoxes.value.push(box)
   }
   try {
     ;(event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId)
@@ -177,13 +159,13 @@ function onPointerUp(event: PointerEvent) {
   }
 }
 
-function clearCuts() {
-  cuts[page.value] = []
-  pendingBox.value = null
+function removePending(index: number) {
+  pendingBoxes.value.splice(index, 1)
 }
 
-function removeCut(y: number) {
-  cuts[page.value] = (cuts[page.value] ?? []).filter((v) => v !== y)
+function clearPending() {
+  pendingBoxes.value = []
+  draftBox.value = null
 }
 
 async function buildImage(regions: Region[]): Promise<string> {
@@ -203,17 +185,23 @@ async function buildImage(regions: Region[]): Promise<string> {
   return await composeDataUrls(parts, 14)
 }
 
-async function saveRegions(regions: Region[], setAsTarget = false, silent = false): Promise<void> {
-  if (!ui.activePaperId || !doc.value) return
+async function appendToQuestion(target: Question, regions: Region[]): Promise<Question> {
+  if (!ui.activePaperId || !doc.value) return target
+  const merged = [...target.regions, ...regions]
+  const image = await buildImage(merged)
+  const text = await extractTextFromRegions(ui.activePaperId, doc.value, merged)
+  await updateQuestion(target.id, { regions: merged, image, ocr_text: text })
+  return { ...target, regions: merged, image, ocr_text: text }
+}
+
+async function saveRegions(regions: Region[], setAsTarget = false, silent = false): Promise<Question | null> {
+  if (!ui.activePaperId || !doc.value) return null
   const target = mergeTargetId.value ? paperQuestions.value.find((q) => q.id === mergeTargetId.value) : null
   if (target) {
-    const merged = [...target.regions, ...regions]
-    const image = await buildImage(merged)
-    const text = await extractTextFromRegions(ui.activePaperId, doc.value, merged)
-    await updateQuestion(target.id, { regions: merged, image, ocr_text: text })
-    if (!silent) toast(`已追加到第 ${paperQuestions.value.indexOf(target) + 1} 题，共 ${merged.length} 个区域`, 'success')
-    pendingBox.value = null
-    return
+    const targetIndex = paperQuestions.value.indexOf(target) + 1
+    const next = await appendToQuestion(target, regions)
+    if (!silent) toast(`已追加到第 ${targetIndex} 题，共 ${next.regions.length} 个区域`, 'success')
+    return next
   }
   const image = await buildImage(regions)
   const text = await extractTextFromRegions(ui.activePaperId, doc.value, regions)
@@ -226,18 +214,26 @@ async function saveRegions(regions: Region[], setAsTarget = false, silent = fals
     difficulty: 3
   })
   mergeTargetId.value = setAsTarget ? created.id : null
-  pendingBox.value = null
-  if (silent) return
+  if (silent) return created
   const count = state.questions.filter((q) => q.paper_id === ui.activePaperId).length
   if (!text.trim()) toast('已生成题目。该页可能是扫描件，文本层为空，可点击「OCR」识别', 'warning', 4200)
   else toast(`已生成第 ${count} 题`, 'success')
+  return created
 }
 
 async function createFromPending() {
-  if (!pendingBox.value) return
+  if (!pendingBoxes.value.length) return
   generating.value = true
   try {
-    await saveRegions([pendingBox.value], true)
+    const created = await saveRegions([...pendingBoxes.value], true, true)
+    pendingBoxes.value = []
+    draftBox.value = null
+    if (!created) return
+    const count = state.questions.filter((q) => q.paper_id === ui.activePaperId).length
+    const regionCount = created.regions.length
+    if (!created.ocr_text.trim()) toast('已生成题目。该页可能是扫描件，文本层为空，可点击「OCR」识别', 'warning', 4200)
+    else if (regionCount > 1) toast(`已生成第 ${count} 题，含 ${regionCount} 个区域`, 'success')
+    else toast(`已生成第 ${count} 题`, 'success')
   } catch (error) {
     toast('生成题目失败：' + ((error as Error).message || '未知错误'), 'error')
   } finally {
@@ -246,38 +242,18 @@ async function createFromPending() {
 }
 
 async function appendPending() {
-  if (!pendingBox.value) return
+  if (!pendingBoxes.value.length) return
   if (!mergeTargetId.value) {
     toast('请先在右侧「已切割题目」中选择一个合并目标', 'warning')
     return
   }
   generating.value = true
   try {
-    await saveRegions([pendingBox.value])
+    await saveRegions([...pendingBoxes.value])
+    pendingBoxes.value = []
+    draftBox.value = null
   } catch (error) {
     toast('追加失败：' + ((error as Error).message || '未知错误'), 'error')
-  } finally {
-    generating.value = false
-  }
-}
-
-async function generateFromCuts() {
-  if (!doc.value || !ui.activePaperId) return
-  const regions = regionsFromCuts(page.value, cuts[page.value] ?? [])
-  if (!regions.length) {
-    toast('请先画出至少两条切线，两条切线之间的区域才会切成一题', 'warning')
-    return
-  }
-  generating.value = true
-  mergeTargetId.value = null
-  try {
-    for (const region of regions) {
-      await saveRegions([region], false, true)
-    }
-    cuts[page.value] = []
-    toast(`本页已生成 ${regions.length} 道题目`, 'success')
-  } catch (error) {
-    toast('切割失败：' + ((error as Error).message || '未知错误'), 'error')
   } finally {
     generating.value = false
   }
@@ -317,13 +293,13 @@ watch(
   () => ui.activePaperId,
   () => {
     mergeTargetId.value = null
-    for (const key of Object.keys(cuts)) delete cuts[Number(key)]
+    draftBox.value = null
+    pendingBoxes.value = []
     void loadDocument()
   }
 )
 
 watch([page, zoom], () => {
-  hoverY.value = null
   void renderPreview()
 })
 
@@ -367,24 +343,13 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="toolbar-spacer" />
-
-        <div class="segmented">
-          <button :class="{ active: mode === 'line' }" @click="mode = 'line'; pendingBox = null"><Scissors /> 切线模式</button>
-          <button :class="{ active: mode === 'box' }" @click="mode = 'box'; pendingBox = null"><SquareDashed /> 框选模式</button>
-        </div>
-
-        <button v-if="mode === 'line'" class="btn btn-primary btn-sm" :disabled="generating || lineQuestionCount === 0" @click="generateFromCuts">
-          <Loader2 v-if="generating" :size="13" class="spin" />
-          <Scissors v-else :size="13" />
-          生成 {{ lineQuestionCount ? lineQuestionCount + ' 道题' : '题目' }}
-        </button>
       </div>
 
       <div class="cut-stage" ref="stageRef">
         <div v-if="!ui.activePaperId" class="empty" style="margin: auto">
           <div class="empty-icon"><Scissors :size="24" /></div>
           <div class="empty-title">还没有选择试卷</div>
-          <div class="empty-desc">先导入一份 PDF 试卷，再回来进行切线或框选切割。</div>
+          <div class="empty-desc">先导入一份 PDF 试卷，再回来进行框选切割。</div>
           <button class="btn btn-primary" style="margin-top: 6px" @click="ui.view = 'import'">去导入试卷</button>
         </div>
 
@@ -398,7 +363,7 @@ onBeforeUnmount(() => {
           <div class="empty-title">正在加载试卷…</div>
         </div>
 
-        <div v-else class="page-wrap" :style="{ width: displayWidth + 'px' }" :class="{ 'mode-box': mode === 'box' }">
+        <div v-else class="page-wrap" :style="{ width: displayWidth + 'px' }">
           <img v-if="pageImage" :src="pageImage" alt="试卷页面" draggable="false" />
           <div v-else class="page-skeleton"><Loader2 :size="22" class="spin" /></div>
 
@@ -410,17 +375,6 @@ onBeforeUnmount(() => {
             @pointerleave="onPointerUp"
             @contextmenu.prevent
           >
-            <div v-for="(y, i) in currentCuts" :key="'cut' + i" class="cut-line" :style="{ top: y * 100 + '%' }">
-              <span class="cut-grip" />
-              <span class="cut-label">切线 {{ i + 1 }}</span>
-            </div>
-
-            <div
-              v-if="hoverY != null && mode === 'line' && hoverY > 0.03 && hoverY < 0.97"
-              class="cut-preview"
-              :style="{ top: hoverY * 100 + '%' }"
-            />
-
             <div
               v-for="(item, i) in pageQuestions"
               :key="'box' + item.question.id + '-' + i"
@@ -437,13 +391,27 @@ onBeforeUnmount(() => {
             </div>
 
             <div
-              v-if="pendingBox"
+              v-for="item in pendingBoxesOnPage"
+              :key="'pending' + item.index"
               class="pending-box"
               :style="{
-                left: pendingBox.x * 100 + '%',
-                top: pendingBox.y * 100 + '%',
-                width: pendingBox.w * 100 + '%',
-                height: pendingBox.h * 100 + '%'
+                left: item.region.x * 100 + '%',
+                top: item.region.y * 100 + '%',
+                width: item.region.w * 100 + '%',
+                height: item.region.h * 100 + '%'
+              }"
+            >
+              <span class="pending-label">区域 {{ item.index + 1 }}</span>
+            </div>
+
+            <div
+              v-if="draftBox"
+              class="pending-box"
+              :style="{
+                left: draftBox.x * 100 + '%',
+                top: draftBox.y * 100 + '%',
+                width: draftBox.w * 100 + '%',
+                height: draftBox.h * 100 + '%'
               }"
             >
               <span class="pending-label">新框选</span>
@@ -455,10 +423,7 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="cut-statusbar">
-        <span v-if="mode === 'line'">在页面上单击可添加一条切线，再次单击已有切线可移除；只有相邻两条切线之间的区域会切成一题，第一条线之上和最后一条线之下的内容不切割。</span>
-        <span v-else>
-          按住拖动画框圈住题目内容；同一题跨页或包含多张图时，先「新建题目」，翻页后再框选并「追加到第 N 题」。
-        </span>
+        按住拖动画框可连续圈选多个区域（可跨页），选好后点「创建题目」合成一题；也可追加到已有题目。
       </div>
     </div>
 
@@ -471,34 +436,29 @@ onBeforeUnmount(() => {
         <span class="badge badge-indigo">{{ paperQuestions.length }} 题</span>
       </div>
 
-      <div v-if="pendingBox" class="card pending-card">
-        <div style="font-size: 13px; font-weight: 600; margin-bottom: 4px">已框选一个区域</div>
-        <div class="hint" style="margin-bottom: 10px">
-          第 {{ pendingBox.page }} 页 · 宽 {{ Math.round(pendingBox.w * 100) }}% · 高 {{ Math.round(pendingBox.h * 100) }}%
+      <div v-if="pendingBoxes.length" class="card pending-card">
+        <div style="font-size: 13px; font-weight: 600; margin-bottom: 4px">已框选 {{ pendingBoxes.length }} 个区域（可跨页合并）</div>
+        <div class="pending-region-list">
+          <div v-for="(box, i) in pendingBoxes" :key="i" class="pending-region-row">
+            <span>
+              区域 {{ i + 1 }} · 第 {{ box.page }} 页 · 宽 {{ Math.round(box.w * 100) }}% · 高
+              {{ Math.round(box.h * 100) }}%
+            </span>
+            <button class="btn btn-ghost btn-icon" title="移除该区域" @click="removePending(i)"><Trash2 :size="13" /></button>
+          </div>
         </div>
         <div style="display: flex; gap: 7px; flex-wrap: wrap">
-          <button class="btn btn-primary btn-sm" :disabled="generating" @click="createFromPending"><Plus :size="13" /> 新建题目</button>
+          <button class="btn btn-primary btn-sm" :disabled="generating" @click="createFromPending">
+            <Plus :size="13" />
+            {{ pendingBoxes.length > 1 ? `创建题目（${pendingBoxes.length} 个区域）` : '创建题目' }}
+          </button>
           <button class="btn btn-sm" :disabled="generating || !mergeTargetId" @click="appendPending">
             <Merge :size="13" />
             追加到 {{ pendingTarget ? '第 ' + (paperQuestions.indexOf(pendingTarget) + 1) + ' 题' : '当前题目' }}
           </button>
-          <button class="btn btn-ghost btn-sm" @click="pendingBox = null">取消</button>
+          <button class="btn btn-ghost btn-sm" @click="clearPending">清空</button>
         </div>
         <div v-if="!mergeTargetId" class="hint" style="margin-top: 8px">需先在下方题目列表中选择「合并目标」才能追加。</div>
-      </div>
-
-      <div class="panel-section">
-        <div class="panel-section-title">
-          <span>本页切线</span>
-          <button v-if="currentCuts.length" class="btn btn-ghost btn-sm" @click="clearCuts"><Eraser :size="12" /> 清空</button>
-        </div>
-        <div v-if="currentCuts.length < 2" class="hint" style="margin-bottom: 8px">
-          <template v-if="!currentCuts.length">第 {{ page }} 页还没有切线。切换到切线模式后在页面上单击即可添加。</template>
-          <template v-else>还需要再画 1 条切线；两条切线之间的区域才会切成一题。</template>
-        </div>
-        <div v-if="currentCuts.length" class="cut-chips">
-          <button v-for="(y, i) in currentCuts" :key="i" class="chip" @click="removeCut(y)">切线 {{ i + 1 }} · {{ Math.round(y * 100) }}% ✕</button>
-        </div>
       </div>
 
       <div class="panel-section" style="flex: 1">
@@ -508,7 +468,7 @@ onBeforeUnmount(() => {
         </div>
 
         <div v-if="!paperQuestions.length" class="hint" style="padding: 18px 0; text-align: center">
-          当前试卷还没有题目。<br />用切线或框选开始切割吧。
+          当前试卷还没有题目。<br />用框选开始切割吧。
         </div>
 
         <div v-else class="question-list">
@@ -553,9 +513,9 @@ onBeforeUnmount(() => {
           <Layers :size="13" /> 跨页 / 多图题目
         </div>
         <div class="hint">
-          1. 在第 1 页框选题干 → 点击「新建题目」；<br />
-          2. 翻到下一页，框选剩余内容；<br />
-          3. 点击「追加到第 N 题」，系统会纵向拼接所有区域并重新合并文字。
+          1. 框选可连续多次，跨页时翻页继续框选；<br />
+          2. 选好后点「创建题目」，所有区域按页码顺序纵向拼接成一题；<br />
+          3. 也可以先在题目列表中选择合并目标，再用「追加到第 N 题」补充内容。
         </div>
       </div>
     </aside>
@@ -629,44 +589,6 @@ onBeforeUnmount(() => {
   inset: 0;
   cursor: crosshair;
   touch-action: none;
-}
-.cut-line {
-  position: absolute;
-  left: 0;
-  right: 0;
-  height: 0;
-  border-top: 2px dashed #ef4444;
-  pointer-events: none;
-  filter: drop-shadow(0 0 1px rgba(255, 255, 255, 0.9));
-}
-.cut-grip {
-  position: absolute;
-  left: 8px;
-  top: -6px;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: #fff;
-  border: 2px solid #ef4444;
-}
-.cut-label {
-  position: absolute;
-  right: 8px;
-  top: -11px;
-  background: #ef4444;
-  color: #fff;
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 999px;
-  line-height: 16px;
-}
-.cut-preview {
-  position: absolute;
-  left: 0;
-  right: 0;
-  height: 0;
-  border-top: 1.5px dashed rgba(239, 68, 68, 0.4);
-  pointer-events: none;
 }
 .question-box {
   position: absolute;
@@ -755,11 +677,6 @@ onBeforeUnmount(() => {
   font-weight: 650;
   margin-bottom: 8px;
 }
-.cut-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
 .question-list {
   display: flex;
   flex-direction: column;
@@ -835,5 +752,28 @@ onBeforeUnmount(() => {
 }
 .spin {
   animation: spin 0.8s linear infinite;
+}
+.pending-region-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.pending-region-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--text-2);
+  background: #fff;
+  border: 1px solid #e3ecf6;
+  border-radius: 7px;
+  padding: 4px 7px;
+}
+.pending-region-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>
