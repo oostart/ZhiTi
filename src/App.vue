@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { Download, FilePlus2, Library, Loader2, Scissors, Settings, Sparkles } from 'lucide-vue-next'
+import { Download, FilePlus2, Library, Loader2, Scissors, Settings } from 'lucide-vue-next'
 import { isTauri } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 import ToastHost from './components/ToastHost.vue'
@@ -33,8 +33,7 @@ const navItems: { key: ViewKey; label: string; icon: typeof FilePlus2 }[] = [
   { key: 'import', label: '试卷导入', icon: FilePlus2 },
   { key: 'cut', label: '题目切割', icon: Scissors },
   { key: 'bank', label: '题库管理', icon: Library },
-  { key: 'export', label: '题目导出', icon: Download },
-  { key: 'settings', label: '设置', icon: Settings }
+  { key: 'export', label: '题目导出', icon: Download }
 ]
 
 const activePaper = computed(() => state.papers.find((p) => p.id === ui.activePaperId))
@@ -146,10 +145,10 @@ async function confirmSetup() {
       </nav>
 
       <div class="sidebar-footer">
-        <div style="display: flex; align-items: center; gap: 5px; color: #6366f1; margin-bottom: 4px">
-          <Sparkles :size="12" /> 本地存储 · 数据不出本机
-        </div>
-        试卷与题目保存在本地数据目录，数据不出本机。{{ desktop ? '' : '（浏览器开发模式使用 IndexedDB）' }}
+        <button class="nav-item" :class="{ active: ui.view === 'settings' }" @click="go('settings')">
+          <Settings :size="17" />
+          <span>设置</span>
+        </button>
       </div>
     </aside>
 
