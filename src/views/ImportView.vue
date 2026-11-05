@@ -64,6 +64,7 @@ async function handleFile(file: File | undefined | null) {
   } catch (error) {
     const message = (error as Error).message || ''
     selectedFile.value = null
+    if (fileInput.value) fileInput.value.value = ''
     if (/password/i.test(message)) toast('该 PDF 已加密，暂不支持导入加密文档', 'error')
     else toast('PDF 解析失败：文件可能已损坏或格式不支持', 'error')
   } finally {
@@ -186,7 +187,7 @@ function formatDate(iso: string): string {
             <template v-if="!selectedFile">
               <div class="drop-icon"><UploadCloud :size="26" /></div>
               <div class="drop-title">拖拽 PDF 到此处，或点击选择文件</div>
-              <div class="hint">支持 10 页以内的常规试卷，最大 120 MB · 文件仅保存在本机</div>
+              <div class="hint">支持多页 PDF 试卷（十几页也可），最大 120 MB · 文件仅保存在本机</div>
             </template>
             <template v-else>
               <div class="drop-icon" :style="{ background: parsing ? '#eef0ff' : '#e7f7f1', color: parsing ? '#4f46e5' : '#059669' }">

@@ -6,7 +6,6 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
-  Eraser,
   Filter,
   Loader2,
   RotateCcw,
@@ -38,8 +37,6 @@ const sortBy = ref<'order' | 'new' | 'difficulty'>('order')
 
 const pageIndex = ref(1)
 const pageSize = 24
-const selectedIds = computed(() => ui.exportIds)
-
 const draft = ref<Question | null>(null)
 const dirty = ref(false)
 const saving = ref(false)
@@ -52,7 +49,6 @@ const ocrProgress = ref(0)
 const ocrStatus = ref('')
 let suppressDirty = false
 
-const activeQuestion = computed(() => state.questions.find((q) => q.id === ui.activeQuestionId) ?? null)
 const activePaper = computed(() => (draft.value ? paperOf(draft.value) : undefined))
 
 watch(draft, () => {

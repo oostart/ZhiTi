@@ -39,6 +39,7 @@ const baseWidth = ref(780)
 const stageRef = ref<HTMLElement>()
 let dragStart: { x: number; y: number } | null = null
 let renderToken = 0
+let loadToken = 0
 let resizeObserver: ResizeObserver | null = null
 
 const paper = computed(() => state.papers.find((p) => p.id === ui.activePaperId))
@@ -89,28 +90,35 @@ async function renderPreview() {
 }
 
 async function loadDocument() {
+  const token = ++loadToken
   if (!ui.activePaperId) {
     doc.value = null
     pageCount.value = 0
     pageImage.value = ''
+    page.value = 1
+    loading.value = false
     return
   }
+  const paperId = ui.activePaperId
   loading.value = true
   loadError.value = ''
   try {
-    const document = await getPaperDocument(ui.activePaperId)
+    const document = await getPaperDocument(paperId)
+    if (token !== loadToken) return
     doc.value = document
     pageCount.value = document.numPages
-    page.value = 1
+    const savedPage = ui.cutPageByPaper[paperId] ?? 1
+    page.value = Math.min(Math.max(1, savedPage), document.numPages)
     draftBox.value = null
     pendingBoxes.value = []
     await renderPreview()
   } catch (error) {
+    if (token !== loadToken) return
     doc.value = null
     loadError.value = (error as Error).message || 'PDF 载入失败'
     toast(loadError.value, 'error')
   } finally {
-    loading.value = false
+    if (token === loadToken) loading.value = false
   }
 }
 
@@ -194,13 +202,20 @@ async function appendToQuestion(target: Question, regions: Region[]): Promise<Qu
   return { ...target, regions: merged, image, ocr_text: text }
 }
 
-async function saveRegions(regions: Region[], setAsTarget = false, silent = false): Promise<Question | null> {
+async function saveRegions(
+  regions: Region[],
+  options: { appendToTarget?: boolean; silent?: boolean } = {}
+): Promise<Question | null> {
   if (!ui.activePaperId || !doc.value) return null
-  const target = mergeTargetId.value ? paperQuestions.value.find((q) => q.id === mergeTargetId.value) : null
-  if (target) {
+  const target =
+    options.appendToTarget && mergeTargetId.value
+      ? paperQuestions.value.find((q) => q.id === mergeTargetId.value) ?? null
+      : null
+  if (options.appendToTarget) {
+    if (!target) return null
     const targetIndex = paperQuestions.value.indexOf(target) + 1
     const next = await appendToQuestion(target, regions)
-    if (!silent) toast(`已追加到第 ${targetIndex} 题，共 ${next.regions.length} 个区域`, 'success')
+    if (!options.silent) toast(`已追加到第 ${targetIndex} 题，共 ${next.regions.length} 个区域`, 'success')
     return next
   }
   const image = await buildImage(regions)
@@ -213,8 +228,7 @@ async function saveRegions(regions: Region[], setAsTarget = false, silent = fals
     question_type: guessQuestionType(text),
     difficulty: 3
   })
-  mergeTargetId.value = setAsTarget ? created.id : null
-  if (silent) return created
+  if (options.silent) return created
   const count = state.questions.filter((q) => q.paper_id === ui.activePaperId).length
   if (!text.trim()) toast('已生成题目。该页可能是扫描件，文本层为空，可点击「OCR」识别', 'warning', 4200)
   else toast(`已生成第 ${count} 题`, 'success')
@@ -225,7 +239,7 @@ async function createFromPending() {
   if (!pendingBoxes.value.length) return
   generating.value = true
   try {
-    const created = await saveRegions([...pendingBoxes.value], true, true)
+    const created = await saveRegions([...pendingBoxes.value], { silent: true })
     pendingBoxes.value = []
     draftBox.value = null
     if (!created) return
@@ -249,7 +263,12 @@ async function appendPending() {
   }
   generating.value = true
   try {
-    await saveRegions([...pendingBoxes.value])
+    const appended = await saveRegions([...pendingBoxes.value], { appendToTarget: true })
+    if (!appended) {
+      mergeTargetId.value = null
+      toast('所选合并目标已不存在，请重新选择', 'warning')
+      return
+    }
     pendingBoxes.value = []
     draftBox.value = null
   } catch (error) {
@@ -270,7 +289,7 @@ async function runOcr(question: Question) {
       toast('未识别到文字，请尝试调整题目图片清晰度', 'warning')
       return
     }
-    await updateQuestion(question.id, { ocr_text: question.ocr_text ? `${question.ocr_text}\n${text}` : text })
+    await updateQuestion(question.id, { ocr_text: text })
     toast(`OCR 完成，识别出 ${text.length} 个字符`, 'success')
   } catch (error) {
     toast('OCR 识别失败：' + ((error as Error).message || '请检查网络连接'), 'error', 4200)
@@ -298,6 +317,10 @@ watch(
     void loadDocument()
   }
 )
+
+watch(page, (value) => {
+  if (ui.activePaperId) ui.cutPageByPaper[ui.activePaperId] = value
+})
 
 watch([page, zoom], () => {
   void renderPreview()
@@ -458,7 +481,13 @@ onBeforeUnmount(() => {
           </button>
           <button class="btn btn-ghost btn-sm" @click="clearPending">清空</button>
         </div>
-        <div v-if="!mergeTargetId" class="hint" style="margin-top: 8px">需先在下方题目列表中选择「合并目标」才能追加。</div>
+        <div class="hint" style="margin-top: 8px">
+          {{
+            mergeTargetId
+              ? '「创建题目」始终新建一题；点「追加到第 N 题」才会并入所选题目。'
+              : '需先在下方题目列表中选择「合并目标」才能追加。'
+          }}
+        </div>
       </div>
 
       <div class="panel-section" style="flex: 1">
@@ -515,7 +544,7 @@ onBeforeUnmount(() => {
         <div class="hint">
           1. 框选可连续多次，跨页时翻页继续框选；<br />
           2. 选好后点「创建题目」，所有区域按页码顺序纵向拼接成一题；<br />
-          3. 也可以先在题目列表中选择合并目标，再用「追加到第 N 题」补充内容。
+          3. 需要并入已有题目时，先在右侧题目列表点选「合并目标」，再点「追加到第 N 题」；直接点「创建题目」总是新建一题。
         </div>
       </div>
     </aside>

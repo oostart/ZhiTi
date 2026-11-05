@@ -41,6 +41,8 @@ const missingDrafts = reactive<Record<number, string>>({})
 const missingSaving = ref(false)
 const missingAiId = ref<number | null>(null)
 const missingPreviewId = ref<number | null>(null)
+const titleEdited = ref(false)
+const subtitleEdited = ref(false)
 
 const options = reactive<ExportOptions>({
   title: '',
@@ -96,7 +98,7 @@ const defaultSubtitle = computed(() => {
 watch(
   defaultTitle,
   (value) => {
-    if (!options.title) options.title = value
+    if (!titleEdited.value) options.title = value
   },
   { immediate: true }
 )
@@ -104,7 +106,7 @@ watch(
 watch(
   defaultSubtitle,
   (value) => {
-    if (!options.subtitle) options.subtitle = value
+    if (!subtitleEdited.value) options.subtitle = value
   },
   { immediate: true }
 )
@@ -358,11 +360,11 @@ async function doExport() {
       <div class="section-title" style="margin-bottom: 10px">排版设置</div>
       <div class="field">
         <label class="label">试卷标题</label>
-        <input v-model="options.title" class="input" placeholder="导出文件中的标题" />
+        <input v-model="options.title" class="input" placeholder="导出文件中的标题" @input="titleEdited = true" />
       </div>
       <div class="field">
         <label class="label">副标题 / 说明</label>
-        <input v-model="options.subtitle" class="input" placeholder="例如：初三物理 · 第一轮复习" />
+        <input v-model="options.subtitle" class="input" placeholder="例如：初三物理 · 第一轮复习" @input="subtitleEdited = true" />
       </div>
 
       <div class="switch-row">

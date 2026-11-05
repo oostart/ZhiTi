@@ -61,8 +61,11 @@ export async function recognizeImage(
         }
       )
     }
-    await initializing
-    initializing = null
+    try {
+      await initializing
+    } finally {
+      initializing = null
+    }
   }
   const worker = cached!.worker
   onProgress?.(0.05, '准备识别')

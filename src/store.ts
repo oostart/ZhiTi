@@ -1,5 +1,6 @@
 import { reactive } from 'vue'
 import { repositories, db } from './db'
+import { disposeAllDocuments } from './utils/pdf'
 import type { AppSettings, KnowledgePoint, Paper, Question } from './types'
 
 export type ViewKey = 'import' | 'cut' | 'bank' | 'export' | 'settings'
@@ -10,6 +11,8 @@ export interface UiState {
   activeQuestionId: number | null
   exportIds: number[]
   bankKeyword: string
+  /** 每份试卷最后浏览的页码，切换视图/试卷后恢复 */
+  cutPageByPaper: Record<number, number>
 }
 
 const defaultSettings: AppSettings = {
@@ -36,7 +39,8 @@ export const ui = reactive<UiState>({
   activePaperId: null,
   activeQuestionId: null,
   exportIds: [],
-  bankKeyword: ''
+  bankKeyword: '',
+  cutPageByPaper: {}
 })
 
 /** 旧版本首次启动时写入的预置知识点目录；现在仅用于一次性清理，不再产生新数据 */
@@ -139,6 +143,9 @@ export async function reloadStore(): Promise<void> {
   ui.activePaperId = null
   ui.activeQuestionId = null
   ui.exportIds = []
+  ui.bankKeyword = ''
+  ui.cutPageByPaper = {}
+  await disposeAllDocuments()
   await initStore()
 }
 
@@ -194,6 +201,7 @@ export async function deletePaper(paperId: number): Promise<void> {
   await db.remove('papers', paperId)
   await repositories.removeFile(paperId)
   state.papers = state.papers.filter((p) => p.id !== paperId)
+  delete ui.cutPageByPaper[paperId]
   if (ui.activePaperId === paperId) ui.activePaperId = state.papers[0]?.id ?? null
 }
 

@@ -46,7 +46,7 @@ const topbar = computed<{ title: string; subtitle: string }>(() => {
     case 'bank':
       return {
         title: '题库管理',
-        subtitle: `共 ${state.questions.length} 道题 · 来自 ${state.papers.length} 份试卷 · 覆盖 ${new Set(state.questions.map((q) => q.knowledge.join())).size} 组知识点`
+        subtitle: `共 ${state.questions.length} 道题 · 来自 ${state.papers.length} 份试卷 · 覆盖 ${new Set(state.questions.flatMap((q) => q.knowledge)).size} 个知识点`
       }
     case 'export':
       return { title: '题目导出', subtitle: ui.exportIds.length ? `已选择 ${ui.exportIds.length} 道题` : '勾选需要导出的题目，选择排版格式' }

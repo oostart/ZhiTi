@@ -96,11 +96,6 @@ async function renderPaperPages(questions: Question[], options: ExportOptions): 
     const imgMaxW = Math.round((contentW - gutter) * Math.min(1, Math.max(0.4, options.scale)))
     let imgW = Math.min(img.naturalWidth, imgMaxW)
     let imgH = (img.naturalHeight * imgW) / img.naturalWidth
-    const maxBlockH = contentBottom - margin - ptToPx(12)
-    if (imgH > maxBlockH) {
-      imgH = maxBlockH
-      imgW = imgH * (img.naturalWidth / img.naturalHeight)
-    }
 
     const answerText = options.showAnswer && question.answer.trim() ? `答案：${question.answer.trim()}` : ''
     const answerCanvas = answerText
@@ -113,7 +108,13 @@ async function renderPaperPages(questions: Question[], options: ExportOptions): 
           family: fontFamily
         })
       : null
-    const blockH = imgH + (answerCanvas ? answerCanvas.height + ptToPx(8) : 0)
+    const answerH = answerCanvas ? answerCanvas.height + ptToPx(8) : 0
+    const maxBlockH = Math.max(ptToPx(40), contentBottom - margin - ptToPx(12) - answerH)
+    if (imgH > maxBlockH) {
+      imgH = maxBlockH
+      imgW = imgH * (img.naturalWidth / img.naturalHeight)
+    }
+    const blockH = imgH + answerH
 
     if (options.onePerPage && current.hasContent) {
       current = addPage()

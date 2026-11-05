@@ -52,6 +52,14 @@ export async function disposeDocument(paperId: number): Promise<void> {
   if (doc) await doc.destroy().catch(() => undefined)
 }
 
+/** 清空全部 PDF 文档与文本层缓存（切换数据目录、清空题库时调用） */
+export async function disposeAllDocuments(): Promise<void> {
+  const docs = Array.from(docCache.values())
+  docCache.clear()
+  textCache.clear()
+  await Promise.all(docs.map((doc) => doc.destroy().catch(() => undefined)))
+}
+
 export async function renderPageToCanvas(doc: PDFDocumentProxy, pageNo: number, targetWidth: number): Promise<HTMLCanvasElement> {
   const page = await doc.getPage(pageNo)
   const base = page.getViewport({ scale: 1 })

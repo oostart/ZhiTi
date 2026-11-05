@@ -18,6 +18,7 @@ import AppModal from '../components/AppModal.vue'
 import { reloadStore, saveSettings, state, ui } from '../store'
 import { db } from '../db'
 import { PROVIDER_PRESETS, testConnection } from '../utils/ai'
+import { disposeAllDocuments } from '../utils/pdf'
 import { changeDataDir, getStorageState, openDataDir } from '../utils/storage'
 import { toast } from '../composables/toast'
 
@@ -117,6 +118,7 @@ async function applyDirChange() {
 }
 
 async function clearAllData() {
+  await disposeAllDocuments()
   await db.clear('questions')
   await db.clear('papers')
   await db.clear('files')
@@ -127,6 +129,8 @@ async function clearAllData() {
   ui.activePaperId = null
   ui.activeQuestionId = null
   ui.exportIds = []
+  ui.bankKeyword = ''
+  ui.cutPageByPaper = {}
   ui.view = 'import'
   confirmClear.value = false
   toast('题库数据已清空，AI 设置已保留', 'success', 3000)
