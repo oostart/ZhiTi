@@ -104,20 +104,123 @@ function questionPrompt(subject: string, grade: string, text: string, answerHint
     .join('\n')
 }
 
-/** AI 生成参考答案 */
-export async function generateAnswer(config: AiSettings, question: { text: string; subject: string; grade: string; type: string; answer: string }): Promise<string> {
-  const content = await chat(config, [
-    {
-      role: 'system',
-      content:
-        '你是一位经验丰富的中小学教师。请为给定题目生成参考答案。要求：直接给出最终答案，选择题给出选项字母，填空/解答题给出完整答案要点；不要重复题目，不要输出多余的客套话；若信息不足以作答，请给出最合理的推断。'
-    },
-    {
-      role: 'user',
-      content: [questionPrompt(question.subject, question.grade, question.text, question.answer), `题型：${question.type || '未标注'}`].join('\n')
+export type AnswerMode = 'choice' | 'fill' | 'judge' | 'solution' | 'reading' | 'essay' | 'auto'
+
+/** 按题型和题干判断作答方式；题型只是提示，题干特征可覆盖明显不准的题型 */
+function detectAnswerMode(type: string, text: string): AnswerMode {
+  const t = (type || '').trim()
+  const plain = (text || '').replace(/\s+/g, '')
+  const wantsProcess = /证明|说明理由|写出过程|解答过程|推导|论证|求证|求解|计算过程/.test(plain)
+  const asksValue =
+    /最大值|最小值|值域|取值范围|解析式|表达式/.test(plain) || /求[^。；]{0,32}(?:值|范围)/.test(plain)
+
+  if (t === '作文题') return 'essay'
+  if (t === '阅读理解') return 'reading'
+  if (t === '判断题') return 'judge'
+  if (t === '单选题' || t === '多选题') return 'choice'
+  if (t === '解答题' || t === '计算题' || t === '实验题') {
+    // 自动题型可能把「只留横线」的题判成解答题；没有过程要求时按填空处理
+    if (!wantsProcess && !asksValue && /____|＿{2,}/.test(text)) return 'fill'
+    return 'solution'
+  }
+  if (t === '填空题') return 'fill'
+
+  // 题型为「其他」或未标注：按题干特征兜底
+  if (/[ABCD][.．、]/.test(plain) && /（\s*）|\(\s*\)/.test(text)) return 'choice'
+  if (/____|＿{2,}|（\s*）|\(\s*\)/.test(text) && !wantsProcess) return 'fill'
+  if (/判断|正确的打|错误的打/.test(plain)) return 'judge'
+  if (wantsProcess || asksValue) return 'solution'
+  return 'auto'
+}
+
+const ANSWER_SYSTEM_PROMPT = [
+  '你是一位阅卷经验丰富的中小学教师，负责写出可直接填入答题卡的参考答案。',
+  '先判断题目实际问什么，再严格按题目要求作答；题目没有要求的解释一律不写。',
+  '规则：',
+  '1. 不复述题干，不写「答案：」「解析：」「解答：」等标签，不写客套话。',
+  '2. 只要求结果的题（选择、填空、判断、求值等）只给最终结果；禁止写推导、举例、反例、知识点说明或逐项验证。',
+  '3. 题目明确要求解答、证明、说明理由或写出过程时，才给出必要步骤和最终结论；步骤精简，不展开无关讨论。',
+  '4. 多空、多小问按题目顺序给出，每个空/小问一行；保留题目要求的格式和单位。',
+  '5. 数学表达式用规范 LaTeX（不带 $ 定界符），不要输出乱码、重复内容或与题目无关的文字。',
+  '6. 即使信息不完整，也给出最可能的答案，不要写「不确定」「需补充信息」。',
+  '7. 题型标注仅供参考；若与题目实际问法不符，以题目实际问法为准。',
+  '8. 以题目最后的问句或横线处的要求为准，题目没有问的内容不要回答。'
+].join('\n')
+
+const ANSWER_MODE_RULES: Record<AnswerMode, string> = {
+  choice:
+    '本题为选择题：只输出选项字母。单选给 1 个字母；多选按字母连写（如 ACD）。不要输出选项内容、理由或「故选」。若题目同时要求说明理由，再简要补上；若与题目实际问法不符，以实际问法为准。',
+  fill:
+    '本题为填空题：只输出应填入横线的内容，按空的顺序逐条给出，有多个空时每个空一行。不要解释、推导或写「填：」。若题目同时要求说明理由，再简要补上；若与题目实际问法不符，以实际问法为准。',
+  judge:
+    '本题为判断题：只输出「正确」或「错误」，不要解释。若与题目实际问法不符，以实际问法为准。',
+  solution:
+    '本题需要解答过程：给出必要的步骤和最终结论，步骤精简；不写与解题无关的分析、举例或知识点总结，最终结果要明确。若题目实际只要求结果，则只给结果。',
+  reading:
+    '本题为阅读理解：按小问顺序逐条给出答案，每条一行，语言简洁，不要复述原文。',
+  essay:
+    '本题为作文题：给出立意与 3-5 条写作提纲，不写整篇作文。',
+  auto:
+    '先判断题目实际要求：只要结果（选择、填空、判断、求值）就只给最终结果；题目明确要求解答、证明、说明理由或写过程时，才给出必要过程。'
+}
+
+function cleanAnswer(raw: string, mode: AnswerMode): string {
+  let text = stripFence(raw).replace(/\r\n/g, '\n').trim()
+  text = text.replace(/^(?:[【\[]?\s*(?:参考答案|答案|解答|解析|答)\s*[】\]]?\s*[：:]?\s*)+/, '').trim()
+
+  // 结果类题目：模型若仍补了解析，从「解析：」起整段丢弃
+  if (mode === 'choice' || mode === 'fill' || mode === 'judge') {
+    const kept: string[] = []
+    for (const line of text.split('\n')) {
+      if (/^\s*(?:解析|分析|详解|解答过程|说明|理由|考点|点评|注意)\s*[：:]/.test(line)) break
+      kept.push(line)
     }
-  ])
-  return stripFence(content)
+    text = kept.join('\n').trim()
+  }
+
+  // 选择题：首行只有字母时归一化为紧凑字母串（A、C → AC）
+  if (mode === 'choice') {
+    const first = text.split('\n')[0].trim().replace(/[（(【\s、，,．.：:]/g, '')
+    if (/^[A-H]{1,4}$/.test(first)) text = first
+  }
+
+  // 判断题：首行是短答时归一化
+  if (mode === 'judge') {
+    const first = text.split('\n')[0].trim()
+    if (first.length <= 8) {
+      if (/正确|√|对/.test(first)) text = '正确'
+      else if (/错误|×|不对/.test(first)) text = '错误'
+    }
+  }
+
+  return text.replace(/\n{3,}/g, '\n\n').trim()
+}
+
+/** AI 生成参考答案：按题目实际问法决定只给结果还是给解答过程 */
+export async function generateAnswer(
+  config: AiSettings,
+  question: { text: string; subject: string; grade: string; type: string }
+): Promise<string> {
+  const mode = detectAnswerMode(question.type, question.text)
+  const userPrompt = [
+    question.subject || question.grade ? `试卷信息：${[question.subject, question.grade].filter(Boolean).join(' / ')}` : '',
+    `题型（仅供参考）：${question.type || '未标注'}`,
+    `作答要求：${ANSWER_MODE_RULES[mode]}`,
+    '题目内容：',
+    question.text.slice(0, 4000)
+  ]
+    .filter(Boolean)
+    .join('\n')
+
+  const content = await chat(
+    config,
+    [
+      { role: 'system', content: ANSWER_SYSTEM_PROMPT },
+      { role: 'user', content: userPrompt }
+    ],
+    { maxTokens: 2048, timeoutMs: 60000 }
+  )
+  return cleanAnswer(content, mode)
 }
 
 /** AI 推荐知识点，返回知识点名称数组 */

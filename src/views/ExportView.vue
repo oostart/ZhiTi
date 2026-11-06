@@ -157,8 +157,7 @@ async function generateMissingAnswer(question: Question) {
       text,
       subject: paper?.subject ?? '',
       grade: paper?.grade ?? '',
-      type: question.question_type,
-      answer: missingDrafts[question.id] || ''
+      type: question.question_type
     })
     toast('AI 已生成答案，请核对后保存', 'success')
   } catch (error) {

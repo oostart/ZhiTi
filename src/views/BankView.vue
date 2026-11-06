@@ -251,8 +251,7 @@ async function runAi(kind: 'answer' | 'knowledge' | 'analysis') {
         text,
         subject: activePaper.value?.subject ?? '',
         grade: activePaper.value?.grade ?? '',
-        type: draft.value.question_type,
-        answer: draft.value.answer
+        type: draft.value.question_type
       })
       draft.value.answer = result
       dirty.value = true
