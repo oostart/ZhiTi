@@ -37,7 +37,10 @@ const generating = ref(false)
 const ocrProgress = reactive<Record<number, number>>({})
 const baseWidth = ref(780)
 const stageRef = ref<HTMLElement>()
+const spaceHeld = ref(false)
+const panning = ref(false)
 let dragStart: { x: number; y: number } | null = null
+let panStart: { x: number; y: number; left: number; top: number } | null = null
 let renderToken = 0
 let loadToken = 0
 let resizeObserver: ResizeObserver | null = null
@@ -130,6 +133,7 @@ function normalizedPoint(event: PointerEvent): { x: number; y: number } {
 }
 
 function onPointerDown(event: PointerEvent) {
+  if (spaceHeld.value) return
   if (loading.value || rendering.value || !doc.value) return
   if (event.button !== 0) return
   const point = normalizedPoint(event)
@@ -169,6 +173,63 @@ function onPointerUp(event: PointerEvent) {
 
 function removePending(index: number) {
   pendingBoxes.value.splice(index, 1)
+}
+
+/** 空格 + 左键拖动平移画布 */
+function onStagePointerDown(event: PointerEvent) {
+  if (!spaceHeld.value || event.button !== 0) return
+  const stage = stageRef.value
+  if (!stage) return
+  panStart = { x: event.clientX, y: event.clientY, left: stage.scrollLeft, top: stage.scrollTop }
+  panning.value = true
+  stage.setPointerCapture(event.pointerId)
+  event.preventDefault()
+}
+
+function onStagePointerMove(event: PointerEvent) {
+  if (!panStart) return
+  const stage = stageRef.value
+  if (!stage) return
+  stage.scrollLeft = panStart.left - (event.clientX - panStart.x)
+  stage.scrollTop = panStart.top - (event.clientY - panStart.y)
+}
+
+function onStagePointerUp(event: PointerEvent) {
+  if (!panStart) return
+  panStart = null
+  panning.value = false
+  const stage = stageRef.value
+  if (!stage) return
+  try {
+    stage.releasePointerCapture(event.pointerId)
+  } catch {
+    /* ignore */
+  }
+}
+
+function isTypingTarget(target: EventTarget | null): boolean {
+  const element = target as HTMLElement | null
+  if (!element) return false
+  const tag = element.tagName
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || element.isContentEditable
+}
+
+function onKeyDown(event: KeyboardEvent) {
+  if (event.code !== 'Space') return
+  if (isTypingTarget(event.target)) return
+  // 阻止空格滚动页面/触发焦点按钮，改为进入平移模式
+  event.preventDefault()
+  if (!event.repeat) spaceHeld.value = true
+}
+
+function onKeyUp(event: KeyboardEvent) {
+  if (event.code === 'Space') spaceHeld.value = false
+}
+
+function onWindowBlur() {
+  spaceHeld.value = false
+  panning.value = false
+  panStart = null
 }
 
 function clearPending() {
@@ -336,11 +397,17 @@ onMounted(() => {
     })
     resizeObserver.observe(stageRef.value)
   }
+  window.addEventListener('keydown', onKeyDown)
+  window.addEventListener('keyup', onKeyUp)
+  window.addEventListener('blur', onWindowBlur)
   void loadDocument()
 })
 
 onBeforeUnmount(() => {
   resizeObserver?.disconnect()
+  window.removeEventListener('keydown', onKeyDown)
+  window.removeEventListener('keyup', onKeyUp)
+  window.removeEventListener('blur', onWindowBlur)
   renderToken++
 })
 </script>
@@ -368,7 +435,16 @@ onBeforeUnmount(() => {
         <div class="toolbar-spacer" />
       </div>
 
-      <div class="cut-stage" ref="stageRef">
+      <div
+        class="cut-stage"
+        ref="stageRef"
+        :class="{ 'pan-ready': spaceHeld, panning }"
+        @pointerdown="onStagePointerDown"
+        @pointermove="onStagePointerMove"
+        @pointerup="onStagePointerUp"
+        @pointerleave="onStagePointerUp"
+        @pointercancel="onStagePointerUp"
+      >
         <div v-if="!ui.activePaperId" class="empty" style="margin: auto">
           <div class="empty-icon"><Scissors :size="24" /></div>
           <div class="empty-title">还没有选择试卷</div>
@@ -446,7 +522,7 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="cut-statusbar">
-        按住拖动画框可连续圈选多个区域（可跨页），选好后点「创建题目」合成一题；也可追加到已有题目。
+        按住拖动画框可连续圈选多个区域（可跨页），选好后点「创建题目」合成一题；也可追加到已有题目。放大后按住空格 + 左键拖动可平移画布。
       </div>
     </div>
 
@@ -586,10 +662,21 @@ onBeforeUnmount(() => {
   background: #e9ecf3;
   display: flex;
   justify-content: center;
+  justify-content: safe center;
   align-items: flex-start;
   padding: 24px 28px 40px;
   background-image: radial-gradient(#d6dbe6 1px, transparent 1px);
   background-size: 18px 18px;
+}
+.cut-stage.pan-ready {
+  cursor: grab;
+}
+.cut-stage.panning {
+  cursor: grabbing;
+}
+.cut-stage.pan-ready .interaction-layer,
+.cut-stage.panning .interaction-layer {
+  cursor: inherit;
 }
 .page-wrap {
   position: relative;
