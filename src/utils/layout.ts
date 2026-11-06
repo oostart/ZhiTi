@@ -464,6 +464,20 @@ export function docToPlainText(doc: ContentDoc | undefined | null): string {
   return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim()
 }
 
+/** 判断题目文档是否包含可导出的有效内容（非空段落、公式或已裁剪图形） */
+export function hasContentDoc(doc: ContentDoc | undefined | null): boolean {
+  return (doc?.content ?? []).some((node) => {
+    if (node.type === 'paragraph') {
+      return (node.content ?? []).some(
+        (child) => (child.type === 'text' && !!child.text?.trim()) || child.type === 'mathInline'
+      )
+    }
+    if (node.type === 'mathBlock') return true
+    if (node.type === 'figure') return !!node.attrs?.src
+    return false
+  })
+}
+
 export function summarizeContent(doc: ContentDoc | undefined | null): {
   paragraphs: number
   math: number

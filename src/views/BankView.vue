@@ -26,9 +26,8 @@ import { addKnowledgePoint, deleteQuestion, paperOf, state, ui, updateQuestion }
 import { toast } from '../composables/toast'
 import { analyzeQuestion, generateAnswer, recommendKnowledge } from '../utils/ai'
 import { recognizeImage } from '../utils/ocr'
-import { canvasToDataUrl, composeDataUrls, cropCanvas } from '../utils/image'
 import { docToPlainText, recognizeQuestionLayout, summarizeContent } from '../utils/layout'
-import { getPaperDocument, renderPageToCanvas } from '../utils/pdf'
+import { buildLayoutImage } from '../utils/layoutImage'
 import { mergeContinuationLines } from '../utils/reflow'
 import { DIFFICULTY_LABELS, QUESTION_TYPES, SUBJECTS, TYPE_BADGE_CLASS, GRADES, type ContentDoc, type Question } from '../types'
 
@@ -334,29 +333,6 @@ function updateKnowledge(value: string[]) {
   if (!draft.value) return
   draft.value.knowledge = value
   dirty.value = true
-}
-
-/** 识别时重新按高分辨率渲染题目区域，避免小下标、分数线丢失 */
-async function buildLayoutImage(question: Question): Promise<string> {
-  if (!question.paper_id || !question.regions.length) return question.image
-  try {
-    const doc = await getPaperDocument(question.paper_id)
-    const ordered = [...question.regions].sort((a, b) => a.page - b.page || a.y - b.y)
-    const pageCanvases = new Map<number, HTMLCanvasElement>()
-    const parts: string[] = []
-    for (const region of ordered) {
-      let canvas = pageCanvases.get(region.page)
-      if (!canvas) {
-        canvas = await renderPageToCanvas(doc, region.page, 2400)
-        pageCanvases.set(region.page, canvas)
-      }
-      parts.push(canvasToDataUrl(cropCanvas(canvas, region), 0.95))
-    }
-    if (parts.length === 1) return parts[0]
-    return await composeDataUrls(parts, 14, 2200)
-  } catch {
-    return question.image
-  }
 }
 
 function requestLayout() {

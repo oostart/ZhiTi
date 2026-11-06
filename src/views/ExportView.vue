@@ -26,6 +26,8 @@ import { save } from '@tauri-apps/plugin-dialog'
 import { isTauri } from '@tauri-apps/api/core'
 import { paperOf, state, ui, updateQuestion } from '../store'
 import { generateAnswer } from '../utils/ai'
+import { hasContentDoc, recognizeQuestionLayout } from '../utils/layout'
+import { buildLayoutImage } from '../utils/layoutImage'
 import { toast } from '../composables/toast'
 import AppModal from '../components/AppModal.vue'
 import type { ExportOptions, Question } from '../types'
@@ -41,6 +43,10 @@ const missingDrafts = reactive<Record<number, string>>({})
 const missingSaving = ref(false)
 const missingAiId = ref<number | null>(null)
 const missingPreviewId = ref<number | null>(null)
+const contentMissingOpen = ref(false)
+const contentBusyId = ref<number | null>(null)
+const contentGeneratingAll = ref(false)
+const contentErrors = reactive<Record<number, string>>({})
 const titleEdited = ref(false)
 const subtitleEdited = ref(false)
 
@@ -57,9 +63,9 @@ const options = reactive<ExportOptions>({
 })
 
 const formats: { key: ExportFormat; label: string; desc: string; icon: typeof FileText }[] = [
-  { key: 'pdf', label: FORMAT_LABELS.pdf, desc: '高清排版，是否带答案由下方开关决定', icon: FileText },
-  { key: 'pptx', label: FORMAT_LABELS.pptx, desc: '一题一页，适合课堂投屏讲解', icon: Presentation },
-  { key: 'zip', label: FORMAT_LABELS.zip, desc: '全部题目图片 + 清单，便于归档', icon: Package }
+  { key: 'pdf', label: FORMAT_LABELS.pdf, desc: '按题目文档重新排版，公式与图形清晰', icon: FileText },
+  { key: 'pptx', label: FORMAT_LABELS.pptx, desc: '一题一页，按题目文档排版，适合投屏', icon: Presentation },
+  { key: 'zip', label: FORMAT_LABELS.zip, desc: '全部题目原图 + 清单，便于归档', icon: Package }
 ]
 
 const selectedQuestions = computed(() =>
@@ -78,6 +84,8 @@ const libraryQuestions = computed(() => {
 })
 
 const missingQuestions = computed(() => selectedQuestions.value.filter((q) => !q.answer.trim()))
+const missingContentQuestions = computed(() => selectedQuestions.value.filter((q) => !hasContentDoc(q.content)))
+const contentBusy = computed(() => contentBusyId.value != null || contentGeneratingAll.value)
 const totalQuestions = computed(() => state.questions.length)
 
 const defaultTitle = computed(() => {
@@ -214,6 +222,14 @@ async function doExport() {
     toast('请先选择需要导出的题目', 'warning')
     return
   }
+  if (format.value !== 'zip' && missingContentQuestions.value.length) {
+    contentMissingOpen.value = true
+    return
+  }
+  await runExport(selectedQuestions.value)
+}
+
+async function runExport(list: Question[]) {
   exporting.value = true
   exportingLabel.value = '正在生成排版…'
   try {
@@ -223,8 +239,10 @@ async function doExport() {
       fileName: options.fileName || options.title || '试卷'
     }
     await new Promise((resolve) => setTimeout(resolve, 60))
-    exportingLabel.value = '正在渲染题目图片与版式…'
-    const { blob, filename } = await exportQuestions(format.value, selectedQuestions.value, finalOptions)
+    exportingLabel.value = '正在排版题目文档…'
+    const { blob, filename, warnings } = await exportQuestions(format.value, list, finalOptions, ({ done, total }) => {
+      exportingLabel.value = `正在排版第 ${Math.min(done + 1, total)}/${total} 题…`
+    })
     if (isTauri()) {
       exportingLabel.value = '请选择保存位置…'
       const ext = filename.split('.').pop()?.toLowerCase() || 'pdf'
@@ -241,6 +259,10 @@ async function doExport() {
       downloadBlob(blob, filename)
       toast(`已导出「${filename}」`, 'success', 4000)
     }
+    if (warnings.length) {
+      const detail = warnings.slice(0, 2).join('；')
+      toast(warnings.length > 2 ? `${detail} 等 ${warnings.length} 条提示` : detail, 'warning', 6200)
+    }
   } catch (error) {
     toast('导出失败：' + ((error as Error).message || '未知错误'), 'error', 5200)
   } finally {
@@ -248,6 +270,55 @@ async function doExport() {
     exportingLabel.value = ''
   }
 }
+
+async function generateContent(question: Question): Promise<void> {
+  if (!state.settings.ai.apiKey.trim()) {
+    toast('请先在「设置」中填写 AI 接口与密钥', 'warning')
+    return
+  }
+  contentBusyId.value = question.id
+  delete contentErrors[question.id]
+  try {
+    const image = await buildLayoutImage(question)
+    const result = await recognizeQuestionLayout(state.settings.ai, image)
+    await updateQuestion(question.id, { content: result.content, ocr_text: result.text })
+    toast(`题目文档已生成：${result.mathCount} 个公式、${result.figureCount} 个图形`, 'success', 3800)
+  } catch (error) {
+    contentErrors[question.id] = (error as Error).message || '生成失败'
+    toast('题目文档生成失败：' + contentErrors[question.id], 'error', 6200)
+  } finally {
+    contentBusyId.value = null
+  }
+}
+
+async function generateAllContent() {
+  if (!state.settings.ai.apiKey.trim()) {
+    toast('请先在「设置」中填写 AI 接口与密钥', 'warning')
+    return
+  }
+  contentGeneratingAll.value = true
+  try {
+    for (const question of [...missingContentQuestions.value]) {
+      await generateContent(question)
+    }
+    if (!missingContentQuestions.value.length) toast('全部题目文档已生成', 'success', 3000)
+  } finally {
+    contentGeneratingAll.value = false
+  }
+}
+
+async function exportWithAvailableContent() {
+  const list = selectedQuestions.value.filter((q) => hasContentDoc(q.content))
+  if (!list.length) {
+    toast('没有已生成题目文档的题目可导出', 'warning')
+    return
+  }
+  const skipped = selectedQuestions.value.length - list.length
+  contentMissingOpen.value = false
+  if (skipped) toast(`已跳过 ${skipped} 道未生成题目文档的题`, 'warning', 4200)
+  await runExport(list)
+}
+
 </script>
 
 <template>
@@ -402,7 +473,7 @@ async function doExport() {
       </div>
 
       <div class="field">
-        <label class="label">题目图片宽度 · {{ Math.round(options.scale * 100) }}%</label>
+        <label class="label">{{ format === 'zip' ? '题目图片宽度' : '题目内容宽度' }} · {{ Math.round(options.scale * 100) }}%</label>
         <input v-model.number="options.scale" type="range" min="0.6" max="1" step="0.05" style="width: 100%; accent-color: var(--accent)" />
       </div>
 
@@ -418,12 +489,16 @@ async function doExport() {
       </button>
       <div v-if="exporting" class="hint" style="text-align: center; margin-top: 8px">{{ exportingLabel }}</div>
 
+      <div v-if="format !== 'zip' && missingContentQuestions.length" class="export-warning">
+        <AlertTriangle :size="13" /> {{ missingContentQuestions.length }} 道题尚未生成题目文档，导出前需生成或跳过。
+      </div>
+
       <div v-if="selectedQuestions.length > 100" class="export-warning">
         <AlertTriangle :size="13" /> 题目超过 100 道，导出与排版可能需要较长时间。
       </div>
 
       <div class="hint" style="margin-top: 12px; line-height: 1.7">
-        导出说明：点击导出会弹出保存位置选择窗口。PDF 采用高清排版图输出，中文显示稳定；PPT 为 16:9 一题一页。
+        导出说明：PDF / PPT 按「题目文档」的结构化内容重新排版，ZIP 仍导出题目原图。点击导出会弹出保存位置选择窗口。
       </div>
     </aside>
   </div>
@@ -462,6 +537,56 @@ async function doExport() {
       <button class="btn btn-primary" :disabled="missingSaving" @click="saveMissingAnswers">
         <Loader2 v-if="missingSaving" :size="14" class="spin" />
         保存并关闭
+      </button>
+    </template>
+  </AppModal>
+
+  <AppModal v-if="contentMissingOpen" title="有题目还没有生成题目文档" :width="720" @close="contentMissingOpen = false">
+    <template #description>
+      已勾选 {{ selectedQuestions.length }} 道题，其中 {{ missingContentQuestions.length }} 道还没有 AI 识别的题目文档。PDF / PPT
+      需要基于题目文档排版，可在下方直接生成，或跳过这些题继续导出。
+    </template>
+
+    <div v-if="missingContentQuestions.length" class="content-missing-toolbar">
+      <span class="hint">共 {{ missingContentQuestions.length }} 道待生成</span>
+      <button class="btn btn-sm" :disabled="contentBusy" @click="generateAllContent">
+        <Loader2 v-if="contentGeneratingAll" :size="12" class="spin" />
+        <Sparkles v-else :size="12" /> 全部生成
+      </button>
+    </div>
+
+    <div v-if="!missingContentQuestions.length" class="content-missing-empty">
+      <Check :size="18" /> 所有题目文档已生成，可以继续导出。
+    </div>
+
+    <div v-else class="missing-list">
+      <div v-for="q in missingContentQuestions" :key="q.id" class="missing-row">
+        <div class="missing-head">
+          <button
+            class="missing-thumb"
+            title="查看题目图片"
+            @click="missingPreviewId = missingPreviewId === q.id ? null : q.id"
+          >
+            <img v-if="q.image" :src="q.image" loading="lazy" />
+          </button>
+          <div style="flex: 1; min-width: 0">
+            <div class="missing-text">{{ q.ocr_text || '（无识别文字，建议先在题库 OCR）' }}</div>
+            <div class="hint" style="font-size: 11px">{{ q.question_type }} · {{ paperOf(q)?.title }}</div>
+            <div v-if="contentErrors[q.id]" class="content-missing-error">{{ contentErrors[q.id] }}</div>
+          </div>
+          <button class="btn btn-sm" :disabled="contentBusy || !q.image" @click="generateContent(q)">
+            <Loader2 v-if="contentBusyId === q.id" :size="12" class="spin" />
+            <Sparkles v-else :size="12" /> {{ contentErrors[q.id] ? '重试' : 'AI 生成' }}
+          </button>
+        </div>
+        <img v-if="missingPreviewId === q.id && q.image" class="missing-preview" :src="q.image" />
+      </div>
+    </div>
+
+    <template #actions>
+      <button class="btn" @click="contentMissingOpen = false">取消</button>
+      <button class="btn btn-primary" :disabled="contentBusy" @click="exportWithAvailableContent">
+        {{ missingContentQuestions.length ? `跳过 ${missingContentQuestions.length} 道并导出` : '继续导出' }}
       </button>
     </template>
   </AppModal>
@@ -748,5 +873,30 @@ async function doExport() {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: #f8f9fc;
+}
+.content-missing-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.content-missing-empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid #bbf7d0;
+  border-radius: 10px;
+  background: #ecfdf5;
+  color: #166534;
+  font-size: 12.5px;
+}
+.content-missing-error {
+  margin-top: 4px;
+  color: #b91c1c;
+  font-size: 11px;
+  line-height: 1.5;
+  word-break: break-word;
 }
 </style>
