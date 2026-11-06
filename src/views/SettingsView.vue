@@ -44,6 +44,7 @@ function onProviderChange() {
   const preset = PROVIDER_PRESETS[ai.provider]
   ai.baseUrl = preset.baseUrl
   ai.model = preset.model
+  ai.visionModel = preset.visionModel
 }
 
 async function saveAll() {
@@ -149,7 +150,7 @@ onMounted(() => {
           <div class="card card-pad" style="margin-bottom: 16px">
             <div class="section-title"><Sparkles :size="16" style="color: var(--accent)" /> AI 辅助接口</div>
             <div class="hint" style="margin-bottom: 14px">
-              用于「答案生成」「知识点推荐」「题目理解」。接口采用 OpenAI 兼容格式，密钥只保存在本机数据库中。
+              用于「答案生成」「知识点推荐」「题目理解」以及题目图片的结构化识别。接口采用 OpenAI 兼容格式，密钥只保存在本机数据库中。
             </div>
 
             <div class="field">
@@ -180,6 +181,14 @@ onMounted(() => {
               <div class="field">
                 <label class="label">温度 · {{ ai.temperature.toFixed(2) }}</label>
                 <input v-model.number="ai.temperature" type="range" min="0" max="1" step="0.05" style="width: 100%; accent-color: var(--accent); margin-top: 8px" />
+              </div>
+            </div>
+
+            <div class="field">
+              <label class="label">视觉模型（识图用）</label>
+              <input v-model="ai.visionModel" class="input" placeholder="如 qwen-vl-max；留空则使用上面的模型" spellcheck="false" />
+              <div class="hint" style="margin-top: 4px">
+                结构化识别需要支持图片输入的模型。留空时沿用上面的对话模型，如果该模型不支持识图，识别时会给出提示。
               </div>
             </div>
 

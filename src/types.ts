@@ -18,6 +18,21 @@ export interface Region {
   h: number
 }
 
+/** TipTap / ProseMirror 文档节点（结构松散，便于兼容不同版本） */
+export interface ContentNode {
+  type: string
+  text?: string
+  attrs?: Record<string, any>
+  content?: ContentNode[]
+  marks?: Array<{ type: string; attrs?: Record<string, any> }>
+}
+
+/** 结构化题目内容：paragraph / mathInline / mathBlock / figure */
+export interface ContentDoc {
+  type: 'doc'
+  content?: ContentNode[]
+}
+
 export interface Question {
   id: number
   paper_id: number | null
@@ -33,6 +48,8 @@ export interface Question {
   order: number
   knowledge: string[]
   analysis: string
+  /** 结构化内容；为空表示尚未识别，仍按原图展示 */
+  content?: ContentDoc
 }
 
 export interface KnowledgePoint {
@@ -46,6 +63,8 @@ export interface AiSettings {
   provider: 'deepseek' | 'qwen' | 'custom'
   baseUrl: string
   model: string
+  /** 识图用模型；留空时沿用 model */
+  visionModel: string
   apiKey: string
   temperature: number
 }

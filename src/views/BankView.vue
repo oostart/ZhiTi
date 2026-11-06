@@ -8,6 +8,7 @@ import {
   ChevronRight,
   Filter,
   Loader2,
+  Maximize2,
   RotateCcw,
   Save,
   ScanText,
@@ -19,11 +20,17 @@ import {
   X
 } from 'lucide-vue-next'
 import AppModal from '../components/AppModal.vue'
+import ContentEditor from '../components/ContentEditor.vue'
+import QuestionPaperView from '../components/QuestionPaperView.vue'
 import { addKnowledgePoint, deleteQuestion, paperOf, state, ui, updateQuestion } from '../store'
 import { toast } from '../composables/toast'
 import { analyzeQuestion, generateAnswer, recommendKnowledge } from '../utils/ai'
 import { recognizeImage } from '../utils/ocr'
-import { DIFFICULTY_LABELS, QUESTION_TYPES, SUBJECTS, TYPE_BADGE_CLASS, GRADES, type Question } from '../types'
+import { canvasToDataUrl, composeDataUrls, cropCanvas } from '../utils/image'
+import { docToPlainText, recognizeQuestionLayout, summarizeContent } from '../utils/layout'
+import { getPaperDocument, renderPageToCanvas } from '../utils/pdf'
+import { mergeContinuationLines } from '../utils/reflow'
+import { DIFFICULTY_LABELS, QUESTION_TYPES, SUBJECTS, TYPE_BADGE_CLASS, GRADES, type ContentDoc, type Question } from '../types'
 
 const keyword = ref(ui.bankKeyword || '')
 const filterSubject = ref('')
@@ -47,9 +54,22 @@ const imagePreview = ref('')
 const ocrBusy = ref(false)
 const ocrProgress = ref(0)
 const ocrStatus = ref('')
+const editorTab = ref<'image' | 'content'>('image')
+const layoutBusy = ref(false)
+const layoutStatus = ref('')
+const pendingLayout = ref(false)
+const paperOpen = ref(false)
 let suppressDirty = false
 
 const activePaper = computed(() => (draft.value ? paperOf(draft.value) : undefined))
+const contentStats = computed(() => (draft.value?.content ? summarizeContent(draft.value.content) : null))
+const editorContent = computed<ContentDoc>(() => draft.value?.content ?? { type: 'doc', content: [] })
+const paperImage = computed(() => draft.value?.image ?? '')
+const paperTitle = computed(() => {
+  if (!draft.value) return '题目文档'
+  const index = state.questions.findIndex((q) => q.id === draft.value!.id) + 1
+  return index > 0 ? `第 ${index} 题 · 题目文档` : '题目文档'
+})
 
 watch(draft, () => {
   if (!suppressDirty) dirty.value = true
@@ -162,8 +182,11 @@ async function openQuestion(question: Question) {
   draft.value = {
     ...question,
     knowledge: [...question.knowledge],
-    regions: [...question.regions]
+    regions: [...question.regions],
+    content: question.content ? (JSON.parse(JSON.stringify(question.content)) as ContentDoc) : undefined
   }
+  editorTab.value = question.content ? 'content' : 'image'
+  paperOpen.value = false
   await nextTick()
   suppressDirty = false
   dirty.value = false
@@ -175,7 +198,8 @@ async function saveDraft(silent = false) {
   try {
     const current = draft.value
     await updateQuestion(current.id, {
-      ocr_text: current.ocr_text,
+      ocr_text: current.content ? docToPlainText(current.content) : current.ocr_text,
+      content: current.content,
       answer: current.answer,
       difficulty: current.difficulty,
       question_type: current.question_type,
@@ -288,6 +312,114 @@ async function runOcr() {
   }
 }
 
+function updateContent(doc: ContentDoc) {
+  if (!draft.value) return
+  draft.value.content = doc
+  draft.value.ocr_text = docToPlainText(doc)
+  dirty.value = true
+}
+
+function updateAnswer(value: string) {
+  if (!draft.value) return
+  draft.value.answer = value
+  dirty.value = true
+}
+
+function updateAnalysis(value: string) {
+  if (!draft.value) return
+  draft.value.analysis = value
+  dirty.value = true
+}
+
+function updateKnowledge(value: string[]) {
+  if (!draft.value) return
+  draft.value.knowledge = value
+  dirty.value = true
+}
+
+/** 识别时重新按高分辨率渲染题目区域，避免小下标、分数线丢失 */
+async function buildLayoutImage(question: Question): Promise<string> {
+  if (!question.paper_id || !question.regions.length) return question.image
+  try {
+    const doc = await getPaperDocument(question.paper_id)
+    const ordered = [...question.regions].sort((a, b) => a.page - b.page || a.y - b.y)
+    const pageCanvases = new Map<number, HTMLCanvasElement>()
+    const parts: string[] = []
+    for (const region of ordered) {
+      let canvas = pageCanvases.get(region.page)
+      if (!canvas) {
+        canvas = await renderPageToCanvas(doc, region.page, 2400)
+        pageCanvases.set(region.page, canvas)
+      }
+      parts.push(canvasToDataUrl(cropCanvas(canvas, region), 0.95))
+    }
+    if (parts.length === 1) return parts[0]
+    return await composeDataUrls(parts, 14, 2200)
+  } catch {
+    return question.image
+  }
+}
+
+function requestLayout() {
+  if (!draft.value) return
+  if (draft.value.content) {
+    pendingLayout.value = true
+    return
+  }
+  void runLayout()
+}
+
+function relayoutFromPaper() {
+  paperOpen.value = false
+  requestLayout()
+}
+
+function openPaper() {
+  if (!draft.value?.content) return
+  const merged = mergeContinuationLines(draft.value.content)
+  if (merged.changed) {
+    draft.value.content = merged.doc
+    draft.value.ocr_text = docToPlainText(merged.doc)
+    dirty.value = true
+    toast('已合并断行，保存后生效', 'success', 2400)
+  }
+  paperOpen.value = true
+}
+
+async function runLayout() {
+  pendingLayout.value = false
+  if (!draft.value) return
+  if (!state.settings.ai.apiKey.trim()) {
+    toast('请先在「设置」中填写 AI 接口与密钥', 'warning')
+    return
+  }
+  const question = draft.value
+  layoutBusy.value = true
+  layoutStatus.value = '正在准备高清题目图…'
+  try {
+    const recognitionImage = await buildLayoutImage(question)
+    layoutStatus.value = '正在请求视觉模型识别…'
+    const result = await recognizeQuestionLayout(state.settings.ai, recognitionImage)
+    if (!draft.value || draft.value.id !== question.id) return
+    draft.value.content = result.content
+    draft.value.ocr_text = result.text
+    editorTab.value = 'content'
+    dirty.value = true
+    const summary = `${result.mathCount} 个公式、${result.figureCount} 个图形`
+    if (result.warnings.length) {
+      const detail = result.warnings.slice(0, 2).join('；')
+      toast(`结构化完成：${summary}。需人工确认：${detail}`, 'warning', 6200)
+    } else {
+      toast(`结构化完成：${summary}，请对照原图校对`, 'success', 3800)
+    }
+  } catch (error) {
+    toast('结构化识别失败：' + ((error as Error).message || '未知错误'), 'error', 6200)
+  } finally {
+    layoutBusy.value = false
+    layoutStatus.value = ''
+  }
+}
+
 async function confirmDelete() {
   if (!pendingDelete.value) return
   const id = pendingDelete.value.id
@@ -298,6 +430,7 @@ async function confirmDelete() {
     dirty.value = false
   }
   pendingDelete.value = null
+  paperOpen.value = false
   toast('已删除该题目', 'success')
 }
 
@@ -448,7 +581,7 @@ onBeforeUnmount(() => {
       <div v-if="!draft" class="empty" style="padding: 60px 16px">
         <div class="empty-icon"><Brain :size="22" /></div>
         <div class="empty-title">题目编辑面板</div>
-        <div class="empty-desc">从左侧选择一道题目，可校对 OCR 文字、补充答案、标注知识点，并调用 AI 辅助处理。</div>
+        <div class="empty-desc">从左侧选择一道题目，可将题目结构化为「文字 + 公式 + 图形」，校对后补充答案与知识点。</div>
       </div>
 
       <template v-else>
@@ -466,41 +599,78 @@ onBeforeUnmount(() => {
           </button>
         </div>
 
-        <div class="editor-image" @click="imagePreview = draft?.image || ''">
-          <img v-if="draft.image" :src="draft.image" />
+        <div class="editor-tabs">
+          <button class="editor-tab" :class="{ active: editorTab === 'image' }" @click="editorTab = 'image'">原图 / 文字</button>
+          <button class="editor-tab" :class="{ active: editorTab === 'content' }" @click="editorTab = 'content'">
+            结构化内容
+            <span v-if="draft.content" class="tab-badge">已识别</span>
+          </button>
         </div>
 
-        <div class="field">
-          <div class="label-row">
-            <label class="label" style="margin: 0">题干文字（OCR 结果）</label>
-            <button class="btn btn-ghost btn-sm" :disabled="ocrBusy" @click="runOcr">
-              <Loader2 v-if="ocrBusy" :size="12" class="spin" />
-              <ScanText v-else :size="12" /> OCR 识别
-            </button>
+        <template v-if="editorTab === 'image'">
+          <div class="editor-image" @click="imagePreview = draft?.image || ''">
+            <img v-if="draft.image" :src="draft.image" />
           </div>
-          <textarea v-model="draft.ocr_text" class="textarea" rows="5" placeholder="识别后的题干内容，支持人工校对…" />
-          <div v-if="ocrBusy" class="ocr-progress">
-            <div class="progress" style="flex: 1">
-              <div class="progress-bar" :style="{ width: Math.round(ocrProgress * 100) + '%' }" />
+
+          <div v-if="draft.content" class="field">
+            <label class="label">正文（由结构化内容自动生成）</label>
+            <textarea class="textarea" rows="4" :value="docToPlainText(draft.content)" readonly />
+            <div class="hint" style="margin-top: 4px">如需修改文字，请切换到「结构化内容」。</div>
+          </div>
+
+          <div v-else class="field">
+            <div class="label-row">
+              <label class="label" style="margin: 0">题干文字（OCR 结果）</label>
+              <button class="btn btn-ghost btn-sm" :disabled="ocrBusy" @click="runOcr">
+                <Loader2 v-if="ocrBusy" :size="12" class="spin" />
+                <ScanText v-else :size="12" /> OCR 识别
+              </button>
             </div>
-            <span class="hint">{{ ocrStatus }} {{ Math.round(ocrProgress * 100) }}%</span>
+            <textarea v-model="draft.ocr_text" class="textarea" rows="5" placeholder="识别后的题干内容，支持人工校对…" />
+            <div v-if="ocrBusy" class="ocr-progress">
+              <div class="progress" style="flex: 1">
+                <div class="progress-bar" :style="{ width: Math.round(ocrProgress * 100) + '%' }" />
+              </div>
+              <span class="hint">{{ ocrStatus }} {{ Math.round(ocrProgress * 100) }}%</span>
+            </div>
+            <div class="hint" style="margin-top: 4px">{{ draft.ocr_text.length }} 字 · OCR 结果请务必人工校对</div>
           </div>
-          <div class="hint" style="margin-top: 4px">{{ draft.ocr_text.length }} 字 · OCR 结果请务必人工校对</div>
-        </div>
+        </template>
 
-        <div class="ai-bar">
-          <button class="btn btn-sm ai-btn" :disabled="!!aiBusy" @click="runAi('answer')">
-            <Loader2 v-if="aiBusy === 'answer'" :size="12" class="spin" />
-            <Sparkles v-else :size="12" /> AI 生成答案
-          </button>
-          <button class="btn btn-sm ai-btn" :disabled="!!aiBusy" @click="runAi('knowledge')">
-            <Loader2 v-if="aiBusy === 'knowledge'" :size="12" class="spin" />
-            <Tag v-else :size="12" /> 推荐知识点
-          </button>
-          <button class="btn btn-sm ai-btn" :disabled="!!aiBusy" @click="runAi('analysis')">
-            <Loader2 v-if="aiBusy === 'analysis'" :size="12" class="spin" />
-            <Brain v-else :size="12" /> 题目理解
-          </button>
+        <div v-else class="content-pane">
+          <div v-if="!draft.content" class="content-empty">
+            <div class="content-empty-title">还没有结构化内容</div>
+            <div class="hint">把题目识别成「文字 + 公式 + 图形块」，识别后可逐题对照校对。</div>
+            <button class="btn btn-primary btn-sm" :disabled="layoutBusy" @click="requestLayout">
+              <Loader2 v-if="layoutBusy" :size="12" class="spin" />
+              <Sparkles v-else :size="12" /> 识别并结构化
+            </button>
+            <div v-if="layoutBusy" class="hint">{{ layoutStatus }}</div>
+            <div v-else class="hint">需要先在「设置」中填写支持图片输入的视觉模型。</div>
+          </div>
+
+          <template v-else>
+            <div class="content-toolbar">
+              <div class="hint">
+                {{ contentStats?.paragraphs }} 段 · {{ contentStats?.math }} 公式 · {{ contentStats?.figures }} 图形
+                <span v-if="contentStats?.unresolved"> · {{ contentStats?.unresolved }} 个待确认</span>
+              </div>
+              <div class="content-toolbar-actions">
+                <button class="btn btn-ghost btn-sm" :disabled="layoutBusy" @click="requestLayout">
+                  <Loader2 v-if="layoutBusy" :size="12" class="spin" />
+                  <ScanText v-else :size="12" /> 重新识别
+                </button>
+                <button class="btn btn-primary btn-sm" @click="openPaper">
+                  <Maximize2 :size="12" /> 打开题目文档
+                </button>
+              </div>
+            </div>
+            <div v-if="layoutBusy" class="hint" style="margin-bottom: 6px">{{ layoutStatus }}</div>
+            <div class="paper-mini" @click="openPaper">
+              <ContentEditor :model-value="editorContent" variant="paper" readonly />
+            </div>
+            <div class="hint" style="margin-top: 6px">点击预览打开题目文档；AI 生成请打开文档，公式可点开改 LaTeX。</div>
+          </template>
         </div>
 
         <div class="field">
@@ -573,6 +743,34 @@ onBeforeUnmount(() => {
         <button class="btn btn-danger" @click="confirmDelete"><Trash2 :size="14" /> 确认删除</button>
       </template>
     </AppModal>
+
+    <AppModal v-if="pendingLayout" title="重新识别这道题？" @close="pendingLayout = false">
+      <template #description>当前的结构化内容会被新的识别结果覆盖，原图与答案不受影响。</template>
+      <template #actions>
+        <button class="btn" @click="pendingLayout = false">取消</button>
+        <button class="btn btn-primary" @click="runLayout"><Sparkles :size="14" /> 重新识别</button>
+      </template>
+    </AppModal>
+
+    <QuestionPaperView
+      v-if="paperOpen && draft?.content"
+      :model-value="editorContent"
+      :image="paperImage"
+      :title="paperTitle"
+      :dirty="dirty"
+      :answer="draft.answer"
+      :analysis="draft.analysis"
+      :knowledge="draft.knowledge"
+      :ai-busy="aiBusy"
+      @update:model-value="updateContent"
+      @update:answer="updateAnswer"
+      @update:analysis="updateAnalysis"
+      @update:knowledge="updateKnowledge"
+      @ai="runAi"
+      @save="saveDraft()"
+      @relayout="relayoutFromPaper"
+      @close="paperOpen = false"
+    />
 
     <AppModal v-if="imagePreview" title="题目图片预览" :width="720" @close="imagePreview = ''">
       <img :src="imagePreview" style="width: 100%; border-radius: 8px; border: 1px solid var(--border)" />
@@ -734,27 +932,104 @@ onBeforeUnmount(() => {
   object-position: top;
   max-height: 220px;
 }
+.editor-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.editor-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.editor-tab:hover {
+  background: #f4f5fb;
+}
+.editor-tab.active {
+  border-color: #d7d5fb;
+  background: #eef2ff;
+  color: #4338ca;
+  font-weight: 600;
+}
+.tab-badge {
+  padding: 0 5px;
+  border-radius: 999px;
+  background: #dcfce7;
+  color: #15803d;
+  font-size: 10px;
+  line-height: 16px;
+  font-weight: 600;
+}
+.content-pane {
+  margin-bottom: 14px;
+}
+.content-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 18px 14px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 9px;
+  background: #fafbfe;
+}
+.content-empty-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+.content-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.content-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.paper-mini {
+  position: relative;
+  max-height: 340px;
+  overflow: hidden;
+  padding: 12px 14px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  cursor: zoom-in;
+  --paper-base-size: 12px;
+  --paper-line-height: 1.8;
+}
+.paper-mini :deep(.content-editor) {
+  pointer-events: none;
+}
+.paper-mini::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 44px;
+  background: linear-gradient(to bottom, rgba(255, 255, 255, 0), #fff);
+  pointer-events: none;
+}
 .label-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin-bottom: 6px;
-}
-.ai-bar {
-  display: flex;
-  gap: 6px;
-  margin-bottom: 14px;
-  flex-wrap: wrap;
-}
-.ai-btn {
-  background: linear-gradient(135deg, #f5f3ff, #eef2ff);
-  border-color: #d7d5fb;
-  color: #5145cd;
-  font-weight: 550;
-}
-.ai-btn:hover:not(:disabled) {
-  background: #ece9ff;
-  border-color: #bcb8f5;
 }
 .chip-remove {
   border: 0;

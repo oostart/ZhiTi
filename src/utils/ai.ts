@@ -1,20 +1,44 @@
 import type { AiSettings } from '../types'
 
-interface ChatMessage {
+export type ChatContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } }
+
+export interface ChatMessage {
   role: 'system' | 'user' | 'assistant'
-  content: string
+  content: string | ChatContentPart[]
 }
 
-export const PROVIDER_PRESETS: Record<Exclude<AiSettings['provider'], 'custom'>, { label: string; baseUrl: string; model: string }> = {
-  deepseek: { label: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
-  qwen: { label: '通义千问', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-plus' }
+export interface ChatOptions {
+  maxTokens?: number
+  timeoutMs?: number
+  temperature?: number
+  model?: string
 }
 
-async function chat(config: AiSettings, messages: ChatMessage[], maxTokens = 1024): Promise<string> {
+export const PROVIDER_PRESETS: Record<
+  Exclude<AiSettings['provider'], 'custom'>,
+  { label: string; baseUrl: string; model: string; visionModel: string }
+> = {
+  deepseek: { label: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', visionModel: '' },
+  qwen: {
+    label: '通义千问',
+    baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    model: 'qwen-plus',
+    visionModel: 'qwen-vl-max'
+  }
+}
+
+/** 通用对话请求，content 支持纯文本或 OpenAI 多模态数组（文字 + 图片） */
+export async function chat(config: AiSettings, messages: ChatMessage[], options: ChatOptions = {}): Promise<string> {
   if (!config.apiKey) throw new Error('尚未配置 API 密钥，请先在「设置」中填写 AI 接口信息')
   const baseUrl = config.baseUrl.replace(/\/+$/, '')
+  const timeoutMs = options.timeoutMs ?? 45000
+  const usesVision = messages.some(
+    (message) => Array.isArray(message.content) && message.content.some((part) => part.type === 'image_url')
+  )
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 45000)
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
     const response = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
@@ -23,10 +47,10 @@ async function chat(config: AiSettings, messages: ChatMessage[], maxTokens = 102
         Authorization: `Bearer ${config.apiKey}`
       },
       body: JSON.stringify({
-        model: config.model,
+        model: options.model || config.model,
         messages,
-        temperature: config.temperature,
-        max_tokens: maxTokens,
+        temperature: options.temperature ?? config.temperature,
+        max_tokens: options.maxTokens ?? 1024,
         stream: false
       }),
       signal: controller.signal
@@ -35,14 +59,27 @@ async function chat(config: AiSettings, messages: ChatMessage[], maxTokens = 102
       const detail = await response.text().catch(() => '')
       if (response.status === 401) throw new Error('API 密钥无效（401），请检查密钥是否正确')
       if (response.status === 429) throw new Error('调用频率或额度受限（429），请稍后再试')
+      if (usesVision && (response.status === 400 || response.status === 415 || response.status === 422)) {
+        throw new Error(
+          `当前模型可能不支持图片输入（${response.status}），请在「设置」中填写支持识图的视觉模型。${detail.slice(0, 120)}`
+        )
+      }
       throw new Error(`AI 接口返回 ${response.status}：${detail.slice(0, 160)}`)
     }
     const data = await response.json()
-    const content: string = data?.choices?.[0]?.message?.content ?? ''
-    if (!content) throw new Error('AI 接口未返回内容')
+    const raw = data?.choices?.[0]?.message?.content
+    const content =
+      typeof raw === 'string'
+        ? raw
+        : Array.isArray(raw)
+          ? raw.map((part: any) => (typeof part === 'string' ? part : part?.text ?? '')).join('')
+          : ''
+    if (!content.trim()) throw new Error('AI 接口未返回内容')
     return content.trim()
   } catch (error) {
-    if ((error as Error).name === 'AbortError') throw new Error('AI 接口响应超时（45 秒），请稍后重试')
+    if ((error as Error).name === 'AbortError') {
+      throw new Error(`AI 接口响应超时（${Math.round(timeoutMs / 1000)} 秒），请稍后重试`)
+    }
     if ((error as Error).message.includes('Failed to fetch')) {
       throw new Error('无法连接 AI 接口：可能是网络不可达或浏览器跨域限制。桌面版（Tauri）中调用不受此限制')
     }
@@ -107,7 +144,7 @@ export async function recommendKnowledge(
           .join('\n')
       }
     ],
-    600
+    { maxTokens: 600 }
   )
   const cleaned = stripFence(content)
   const match = cleaned.match(/\[[\s\S]*\]/)
@@ -140,12 +177,12 @@ export async function analyzeQuestion(config: AiSettings, question: { text: stri
       },
       { role: 'user', content: questionPrompt(question.subject, question.grade, question.text, question.answer) }
     ],
-    800
+    { maxTokens: 800 }
   )
   return stripFence(content)
 }
 
 /** 测试 AI 接口连通性 */
 export async function testConnection(config: AiSettings): Promise<string> {
-  return await chat(config, [{ role: 'user', content: '请回复“连接成功”四个字。' }], 64)
+  return await chat(config, [{ role: 'user', content: '请回复“连接成功”四个字。' }], { maxTokens: 64 })
 }

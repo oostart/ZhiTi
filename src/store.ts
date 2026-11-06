@@ -20,6 +20,7 @@ const defaultSettings: AppSettings = {
     provider: 'deepseek',
     baseUrl: 'https://api.deepseek.com/v1',
     model: 'deepseek-chat',
+    visionModel: '',
     apiKey: '',
     temperature: 0.2
   },
@@ -209,6 +210,11 @@ function toPlainRegion(region: Question['regions'][number]): Question['regions']
   return { page: region.page, x: region.x, y: region.y, w: region.w, h: region.h }
 }
 
+/** 结构化内容是 Vue 响应式代理，写入数据库前转成纯 JSON，避免 IndexedDB 克隆失败 */
+function toPlainContent(content: Question['content']): Question['content'] {
+  return content ? (JSON.parse(JSON.stringify(content)) as NonNullable<Question['content']>) : undefined
+}
+
 function nextOrder(): number {
   return state.questions.reduce((max, q) => Math.max(max, q.order), 0) + 1
 }
@@ -226,7 +232,8 @@ export async function createQuestion(input: Partial<Question>): Promise<Question
     created_at: new Date().toISOString(),
     order: nextOrder(),
     knowledge: [...(input.knowledge ?? [])],
-    analysis: input.analysis ?? ''
+    analysis: input.analysis ?? '',
+    content: toPlainContent(input.content)
   }
   const id = await db.put('questions', withoutId(question))
   question.id = id
@@ -240,6 +247,7 @@ export async function updateQuestion(id: number, patch: Partial<Question>): Prom
   const next: Question = { ...state.questions[index], ...patch, id }
   next.regions = next.regions.map(toPlainRegion)
   next.knowledge = [...next.knowledge]
+  next.content = toPlainContent(next.content)
   state.questions[index] = next
   await db.put('questions', next)
 }
