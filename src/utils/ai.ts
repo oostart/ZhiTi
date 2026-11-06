@@ -1,4 +1,5 @@
 import type { AiSettings } from '../types'
+import { normalizeNumberedList } from './text'
 
 export type ChatContentPart =
   | { type: 'text'; text: string }
@@ -141,10 +142,11 @@ const ANSWER_SYSTEM_PROMPT = [
   '2. 只要求结果的题（选择、填空、判断、求值等）只给最终结果；禁止写推导、举例、反例、知识点说明或逐项验证。',
   '3. 题目明确要求解答、证明、说明理由或写出过程时，才给出必要步骤和最终结论；步骤精简，不展开无关讨论。',
   '4. 多空、多小问按题目顺序给出，每个空/小问一行；保留题目要求的格式和单位。',
-  '5. 数学表达式用规范 LaTeX（不带 $ 定界符），不要输出乱码、重复内容或与题目无关的文字。',
-  '6. 即使信息不完整，也给出最可能的答案，不要写「不确定」「需补充信息」。',
-  '7. 题型标注仅供参考；若与题目实际问法不符，以题目实际问法为准。',
-  '8. 以题目最后的问句或横线处的要求为准，题目没有问的内容不要回答。'
+  '5. 数学公式必须用 LaTeX 书写：行内公式用 $...$ 包裹，独立成行的公式用 $$...$$ 包裹；不要只写裸命令（如 \\frac{1}{2}）让读者看到代码。',
+  '6. 不要输出乱码、重复内容或与题目无关的文字。',
+  '7. 即使信息不完整，也给出最可能的答案，不要写「不确定」「需补充信息」。',
+  '8. 题型标注仅供参考；若与题目实际问法不符，以题目实际问法为准。',
+  '9. 以题目最后的问句或横线处的要求为准，题目没有问的内容不要回答。'
 ].join('\n')
 
 const ANSWER_MODE_RULES: Record<AnswerMode, string> = {
@@ -193,7 +195,7 @@ function cleanAnswer(raw: string, mode: AnswerMode): string {
     }
   }
 
-  return text.replace(/\n{3,}/g, '\n\n').trim()
+  return normalizeNumberedList(text.replace(/\n{3,}/g, '\n\n').trim())
 }
 
 /** AI 生成参考答案：按题目实际问法决定只给结果还是给解答过程 */
@@ -275,14 +277,21 @@ export async function analyzeQuestion(config: AiSettings, question: { text: stri
     [
       {
         role: 'system',
-        content:
-          '你是一位中小学教研专家。请用简洁中文分析这道题：1）考查的核心知识点；2）涉及的情境/物理模型或应用场景；3）解题的关键思路。分点作答，总字数控制在 250 字以内，不要复述题目原文。'
+        content: [
+          '你是一位中小学教研专家。请用简洁中文分析这道题，分三点作答：',
+          '（1）考查的核心知识点；',
+          '（2）涉及的情境/物理模型或应用场景；',
+          '（3）解题的关键思路。',
+          '编号必须写成完整的全角括号「（1）（2）（3）」，左右括号都要有，不要写成 1）或 (1 这种缺一半括号的形式，也不要用其他编号样式。',
+          '数学公式用 LaTeX：行内用 $...$ 包裹，不要写裸命令。',
+          '总字数控制在 250 字以内，不要复述题目原文。'
+        ].join('\n')
       },
       { role: 'user', content: questionPrompt(question.subject, question.grade, question.text, question.answer) }
     ],
     { maxTokens: 800 }
   )
-  return stripFence(content)
+  return normalizeNumberedList(stripFence(content))
 }
 
 /** 测试 AI 接口连通性 */

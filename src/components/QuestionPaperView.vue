@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { Brain, Columns2, Loader2, RefreshCw, Save, Sparkles, Tag, X } from 'lucide-vue-next'
 import ContentEditor from './ContentEditor.vue'
+import { renderMathText } from '../utils/mathText'
+import { normalizeNumberedList } from '../utils/text'
 import type { ContentDoc } from '../types'
 
 const props = defineProps<{
@@ -30,6 +32,11 @@ const compare = ref(true)
 const knowledgeInput = ref('')
 const answerBox = ref<HTMLTextAreaElement | null>(null)
 const analysisBox = ref<HTMLTextAreaElement | null>(null)
+const answerEditing = ref(false)
+const analysisEditing = ref(false)
+
+const answerHtml = computed(() => renderMathText(normalizeNumberedList(props.answer)))
+const analysisHtml = computed(() => renderMathText(normalizeNumberedList(props.analysis)))
 
 function update(value: ContentDoc) {
   emit('update:modelValue', value)
@@ -75,6 +82,24 @@ watch(
   () => props.analysis,
   () => nextTick(() => grow(analysisBox.value))
 )
+watch(answerEditing, (editing) => {
+  if (!editing) return
+  nextTick(() => {
+    const box = answerBox.value
+    box?.focus()
+    box?.setSelectionRange(box.value.length, box.value.length)
+    grow(box)
+  })
+})
+watch(analysisEditing, (editing) => {
+  if (!editing) return
+  nextTick(() => {
+    const box = analysisBox.value
+    box?.focus()
+    box?.setSelectionRange(box.value.length, box.value.length)
+    grow(box)
+  })
+})
 onMounted(() =>
   nextTick(() => {
     grow(answerBox.value)
@@ -129,7 +154,18 @@ onMounted(() =>
                     {{ props.answer ? '重新生成' : 'AI 生成' }}
                   </button>
                 </header>
+                <div
+                  v-if="!answerEditing"
+                  class="paper-answer-view"
+                  :class="{ 'is-empty': !props.answer.trim() }"
+                  title="点击可编辑"
+                  @click="answerEditing = true"
+                >
+                  <div v-if="props.answer.trim()" class="paper-richtext" v-html="answerHtml" />
+                  <span v-else class="paper-placeholder">尚未生成，可手动填写或点击 AI 生成</span>
+                </div>
                 <textarea
+                  v-else
                   ref="answerBox"
                   class="paper-textarea"
                   :value="props.answer"
@@ -137,6 +173,7 @@ onMounted(() =>
                   spellcheck="false"
                   placeholder="尚未生成，可手动填写或点击 AI 生成"
                   @input="onAnswerInput"
+                  @blur="answerEditing = false"
                 />
               </section>
 
@@ -188,7 +225,18 @@ onMounted(() =>
                     {{ props.analysis ? '重新分析' : 'AI 分析' }}
                   </button>
                 </header>
+                <div
+                  v-if="!analysisEditing"
+                  class="paper-answer-view"
+                  :class="{ 'is-empty': !props.analysis.trim() }"
+                  title="点击可编辑"
+                  @click="analysisEditing = true"
+                >
+                  <div v-if="props.analysis.trim()" class="paper-richtext" v-html="analysisHtml" />
+                  <span v-else class="paper-placeholder">尚未生成，可手动填写或点击 AI 分析</span>
+                </div>
                 <textarea
+                  v-else
                   ref="analysisBox"
                   class="paper-textarea"
                   :value="props.analysis"
@@ -196,6 +244,7 @@ onMounted(() =>
                   spellcheck="false"
                   placeholder="尚未生成，可手动填写或点击 AI 分析"
                   @input="onAnalysisInput"
+                  @blur="analysisEditing = false"
                 />
               </section>
             </article>
@@ -360,6 +409,33 @@ onMounted(() =>
 }
 .paper-textarea::placeholder {
   color: #a2a9b8;
+}
+.paper-answer-view {
+  min-height: 3em;
+  padding: 2px 4px;
+  border: 1px dashed transparent;
+  border-radius: 6px;
+  cursor: text;
+}
+.paper-answer-view:hover {
+  border-color: var(--border-strong);
+}
+.paper-richtext {
+  color: #1a1a1a;
+  font-size: 15px;
+  line-height: 1.9;
+  word-break: break-word;
+}
+.paper-richtext :deep(.katex) {
+  font-size: 1.05em;
+}
+.paper-richtext :deep(.katex-display) {
+  margin: 0.35em 0;
+}
+.paper-placeholder {
+  color: #a2a9b8;
+  font-size: 15px;
+  line-height: 1.9;
 }
 .paper-knowledge {
   display: flex;
