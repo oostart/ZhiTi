@@ -114,11 +114,6 @@ export function createTextCanvas(options: TextBlockOptions): HTMLCanvasElement {
   return canvas
 }
 
-export function fitSize(w: number, h: number, maxW: number, maxH = Number.MAX_SAFE_INTEGER) {
-  const ratio = Math.min(maxW / w, maxH / h, 1)
-  return { width: Math.round(w * ratio), height: Math.round(h * ratio) }
-}
-
 export function downloadBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')

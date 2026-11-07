@@ -5,6 +5,7 @@ import ContentEditor from './ContentEditor.vue'
 import { renderMathText } from '../utils/mathText'
 import { normalizeNumberedList } from '../utils/text'
 import type { ContentDoc } from '../types'
+import { DIFFICULTY_LABELS, QUESTION_TYPES } from '../types'
 
 const props = defineProps<{
   modelValue: ContentDoc
@@ -14,6 +15,8 @@ const props = defineProps<{
   answer: string
   analysis: string
   knowledge: string[]
+  questionType: string
+  difficulty: number
   aiBusy: '' | 'answer' | 'knowledge' | 'analysis'
 }>()
 
@@ -25,6 +28,8 @@ const emit = defineEmits<{
   (event: 'update:answer', value: string): void
   (event: 'update:analysis', value: string): void
   (event: 'update:knowledge', value: string[]): void
+  (event: 'update:questionType', value: string): void
+  (event: 'update:difficulty', value: number): void
   (event: 'ai', kind: 'answer' | 'knowledge' | 'analysis'): void
 }>()
 
@@ -72,6 +77,14 @@ function removeKnowledge(name: string) {
     'update:knowledge',
     props.knowledge.filter((item) => item !== name)
   )
+}
+
+function onTypeChange(event: Event) {
+  emit('update:questionType', (event.target as HTMLSelectElement).value)
+}
+
+function onDifficultyChange(event: Event) {
+  emit('update:difficulty', Number((event.target as HTMLSelectElement).value))
 }
 
 watch(
@@ -246,6 +259,26 @@ onMounted(() =>
                   @input="onAnalysisInput"
                   @blur="analysisEditing = false"
                 />
+              </section>
+
+              <section class="paper-section">
+                <header class="paper-section-head">
+                  <h3 class="paper-section-title">题目属性</h3>
+                </header>
+                <div class="paper-attrs">
+                  <label class="paper-attr">
+                    <span>题型</span>
+                    <select :value="props.questionType" @change="onTypeChange">
+                      <option v-for="type in QUESTION_TYPES" :key="type" :value="type">{{ type }}</option>
+                    </select>
+                  </label>
+                  <label class="paper-attr">
+                    <span>难度</span>
+                    <select :value="props.difficulty" @change="onDifficultyChange">
+                      <option v-for="level in 5" :key="level" :value="level">{{ level }} · {{ DIFFICULTY_LABELS[level] }}</option>
+                    </select>
+                  </label>
+                </div>
               </section>
             </article>
           </div>
@@ -454,6 +487,29 @@ onMounted(() =>
   background: #f5f3ff;
   color: #5145cd;
   font-size: 12px;
+}
+.paper-attrs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+}
+.paper-attr {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #5b6472;
+  font-size: 13px;
+}
+.paper-attr select {
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  color: #1a1a1a;
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
 }
 .paper-chip-remove {
   display: grid;

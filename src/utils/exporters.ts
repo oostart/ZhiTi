@@ -329,12 +329,12 @@ export async function exportZip(questions: Question[], options: ExportOptions): 
       question_type: question.question_type,
       difficulty: question.difficulty,
       knowledge: question.knowledge,
-      ocr_text: question.ocr_text,
+      text: question.text,
       answer: options.showAnswer ? question.answer : '',
       analysis: question.analysis
     })
     lines.push(`第 ${i + 1} 题【${question.question_type}｜难度 ${question.difficulty}】${question.knowledge.length ? '｜' + question.knowledge.join('、') : ''}`)
-    lines.push(question.ocr_text || '（无识别文字）')
+    lines.push(question.text || '（暂无题干文字）')
     if (options.showAnswer) lines.push(`答案：${question.answer || '（未填写）'}`)
     lines.push('')
   }

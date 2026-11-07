@@ -111,7 +111,7 @@ function insideFragment(frag: TextFragment, region: Region): boolean {
   return cx >= region.x - 0.004 && cx <= region.x + region.w + 0.004 && cy >= region.y - 0.004 && cy <= region.y + region.h + 0.004
 }
 
-/** 从 PDF 文本层中按区域提取文字（比 OCR 更准确，数字版试卷首选） */
+/** 从 PDF 文本层中按区域提取文字（数字版试卷首选） */
 export async function extractTextFromRegions(paperId: number, doc: PDFDocumentProxy, regions: Region[]): Promise<string> {
   const blocks: string[] = []
   const sorted = [...regions].sort((a, b) => a.page - b.page || a.y - b.y)

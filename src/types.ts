@@ -39,7 +39,8 @@ export interface Question {
   /** 题目图片（dataURL，多区域时纵向拼接） */
   image: string
   regions: Region[]
-  ocr_text: string
+  /** 题干纯文本（用于搜索、AI 分析与导出兜底） */
+  text: string
   answer: string
   /** 难度 1-5 */
   difficulty: number
@@ -69,13 +70,8 @@ export interface AiSettings {
   temperature: number
 }
 
-export interface OcrSettings {
-  lang: string
-}
-
 export interface AppSettings {
   ai: AiSettings
-  ocr: OcrSettings
 }
 
 export interface StoredFile {

@@ -8,7 +8,6 @@ import {
   Loader2,
   PlugZap,
   Save,
-  ScanText,
   Sparkles,
   Trash2
 } from 'lucide-vue-next'
@@ -24,7 +23,6 @@ import { toast } from '../composables/toast'
 
 const desktop = isTauri()
 const ai = reactive({ ...state.settings.ai })
-const ocrLang = ref(state.settings.ocr.lang)
 const showKey = ref(false)
 const saving = ref(false)
 const testing = ref(false)
@@ -50,7 +48,7 @@ function onProviderChange() {
 async function saveAll() {
   saving.value = true
   try {
-    await saveSettings({ ai: { ...ai }, ocr: { lang: ocrLang.value } })
+    await saveSettings({ ai: { ...ai } })
     toast('设置已保存到本地', 'success')
   } catch (error) {
     toast('保存失败：' + ((error as Error).message || '未知错误'), 'error')
@@ -109,7 +107,6 @@ async function applyDirChange() {
     pendingDir.value = ''
     await reloadStore()
     Object.assign(ai, state.settings.ai)
-    ocrLang.value = state.settings.ocr.lang
     toast('数据目录已切换到：' + info.dataDir, 'success', 4200)
   } catch (error) {
     toast('切换数据目录失败：' + ((error as Error).message || '未知错误'), 'error', 5200)
@@ -224,22 +221,6 @@ onMounted(() => {
         </div>
 
         <div>
-          <div class="card card-pad" style="margin-bottom: 16px">
-            <div class="section-title"><ScanText :size="16" style="color: var(--accent)" /> OCR 文字识别</div>
-            <div class="field">
-              <label class="label">识别语言</label>
-              <select v-model="ocrLang" class="select" style="max-width: 300px">
-                <option value="chi_sim+eng">简体中文 + 英文（推荐）</option>
-                <option value="chi_sim">仅简体中文</option>
-                <option value="eng">仅英文</option>
-              </select>
-            </div>
-            <div class="hint">
-              数字版 PDF 会优先直接读取文本层（准确率最高）；扫描件可在题目编辑面板点击「OCR 识别」，由 Tesseract.js 在本地完成识别，首次使用需联网下载语言模型。
-            </div>
-            <button class="btn" style="margin-top: 12px" :disabled="saving" @click="saveAll"><Save :size="14" /> 保存 OCR 设置</button>
-          </div>
-
           <div class="card card-pad" style="margin-bottom: 16px">
             <div class="section-title"><Database :size="16" style="color: var(--accent)" /> 本地数据</div>
             <div class="stat-grid">

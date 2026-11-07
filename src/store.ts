@@ -23,8 +23,7 @@ const defaultSettings: AppSettings = {
     visionModel: '',
     apiKey: '',
     temperature: 0.2
-  },
-  ocr: { lang: 'chi_sim+eng' }
+  }
 }
 
 export const state = reactive({
@@ -119,6 +118,12 @@ async function cleanupLegacyPresetKnowledge(): Promise<void> {
   await db.put('settings', { key: PRESET_CLEANUP_KEY, value: true })
 }
 
+/** 兼容旧版本字段：把 ocr_text 迁移为 text，避免存量题目丢失题干文字 */
+function normalizeQuestion(question: Question & { ocr_text?: string }): Question {
+  const { ocr_text, ...rest } = question
+  return { ...rest, text: question.text ?? ocr_text ?? '' }
+}
+
 export async function initStore(): Promise<void> {
   if (state.ready) return
   const [papers, questions, knowledge, settings] = await Promise.all([
@@ -128,9 +133,11 @@ export async function initStore(): Promise<void> {
     repositories.settings()
   ])
   state.papers = papers.sort((a, b) => b.created_at.localeCompare(a.created_at))
-  state.questions = questions.sort((a, b) => a.order - b.order)
+  state.questions = questions
+    .map((question) => normalizeQuestion(question as Question & { ocr_text?: string }))
+    .sort((a, b) => a.order - b.order)
   state.knowledge = knowledge.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
-  state.settings = settings ? { ...defaultSettings, ...settings, ai: { ...defaultSettings.ai, ...settings.ai } } : structuredClone(defaultSettings)
+  state.settings = settings ? { ai: { ...defaultSettings.ai, ...settings.ai } } : structuredClone(defaultSettings)
 
   await cleanupLegacyPresetKnowledge()
   state.ready = true
@@ -154,8 +161,7 @@ export async function saveSettings(patch: Partial<AppSettings>): Promise<void> {
   const next: AppSettings = {
     ...state.settings,
     ...patch,
-    ai: { ...state.settings.ai, ...(patch.ai ?? {}) },
-    ocr: { ...state.settings.ocr, ...(patch.ocr ?? {}) }
+    ai: { ...state.settings.ai, ...(patch.ai ?? {}) }
   }
   state.settings = next
   await repositories.saveSettings(next)
@@ -225,7 +231,7 @@ export async function createQuestion(input: Partial<Question>): Promise<Question
     paper_id: input.paper_id ?? null,
     image: input.image ?? '',
     regions: (input.regions ?? []).map(toPlainRegion),
-    ocr_text: input.ocr_text ?? '',
+    text: input.text ?? '',
     answer: input.answer ?? '',
     difficulty: input.difficulty ?? 3,
     question_type: input.question_type ?? '其他',
@@ -259,24 +265,6 @@ export async function deleteQuestion(id: number): Promise<void> {
   ui.exportIds = ui.exportIds.filter((x) => x !== id)
 }
 
-export async function reorderQuestions(ids: number[]): Promise<void> {
-  const map = new Map(state.questions.map((q) => [q.id, q]))
-  const result: Question[] = []
-  let order = 1
-  for (const id of ids) {
-    const q = map.get(id)
-    if (!q) continue
-    q.order = order++
-    result.push(q)
-    await db.put('questions', { ...q, regions: q.regions.map(toPlainRegion), knowledge: [...q.knowledge] })
-  }
-  state.questions = state.questions
-    .filter((q) => !ids.includes(q.id))
-    .concat(result)
-    .sort((a, b) => a.order - b.order)
-  state.questions.forEach((q, i) => (q.order = i + 1))
-}
-
 export async function addKnowledgePoint(name: string, subject: string): Promise<KnowledgePoint> {
   const existing = state.knowledge.find((k) => k.name === name && k.subject === subject)
   if (existing) return existing
@@ -286,18 +274,6 @@ export async function addKnowledgePoint(name: string, subject: string): Promise<
   state.knowledge.push(row)
   state.knowledge.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
   return row
-}
-
-export async function deleteKnowledgePoint(id: number): Promise<void> {
-  const target = state.knowledge.find((k) => k.id === id)
-  if (!target) return
-  for (const q of state.questions) {
-    if (q.knowledge.includes(target.name)) {
-      await updateQuestion(q.id, { knowledge: q.knowledge.filter((n) => n !== target.name) })
-    }
-  }
-  await db.remove('knowledge', id)
-  state.knowledge = state.knowledge.filter((k) => k.id !== id)
 }
 
 export function paperOf(question: Question): Paper | undefined {

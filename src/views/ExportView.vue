@@ -15,7 +15,6 @@ import {
   Presentation,
   Search,
   Sparkles,
-  Trash2,
   X
 } from 'lucide-vue-next'
 import { exportQuestions, FORMAT_LABELS, type ExportFormat } from '../utils/exporters'
@@ -78,7 +77,7 @@ const libraryQuestions = computed(() => {
     .filter((q) => !ui.exportIds.includes(q.id))
     .filter((q) => {
       if (!kw) return true
-      return [q.ocr_text, q.knowledge.join(' '), paperOf(q)?.title ?? ''].join(' ').toLowerCase().includes(kw)
+      return [q.text, q.knowledge.join(' '), paperOf(q)?.title ?? ''].join(' ').toLowerCase().includes(kw)
     })
     .slice(0, 80)
 })
@@ -153,9 +152,9 @@ async function saveMissingAnswers() {
 }
 
 async function generateMissingAnswer(question: Question) {
-  const text = question.ocr_text.trim()
+  const text = question.text.trim()
   if (!text) {
-    toast('该题还没有识别文字，无法生成答案，可先在题库中 OCR', 'warning')
+    toast('该题还没有文字内容，无法生成答案，请先在题库中生成题目文档', 'warning')
     return
   }
   missingAiId.value = question.id
@@ -281,7 +280,7 @@ async function generateContent(question: Question): Promise<void> {
   try {
     const image = await buildLayoutImage(question)
     const result = await recognizeQuestionLayout(state.settings.ai, image)
-    await updateQuestion(question.id, { content: result.content, ocr_text: result.text })
+    await updateQuestion(question.id, { content: result.content, text: result.text })
     toast(`题目文档已生成：${result.mathCount} 个公式、${result.figureCount} 个图形`, 'success', 3800)
   } catch (error) {
     contentErrors[question.id] = (error as Error).message || '生成失败'
@@ -347,7 +346,7 @@ async function exportWithAvailableContent() {
           <div v-for="q in libraryQuestions" :key="q.id" class="library-item">
             <img v-if="q.image" :src="q.image" loading="lazy" />
             <div style="flex: 1; min-width: 0">
-              <div class="library-text">{{ q.ocr_text || '（无识别文字）' }}</div>
+              <div class="library-text">{{ q.text || '（暂无题干文字）' }}</div>
               <div class="hint" style="font-size: 11px">{{ q.question_type }} · 难度 {{ q.difficulty }}</div>
             </div>
             <button class="btn btn-sm btn-primary" @click="addQuestion(q.id)"><Plus :size="12" /> 添加</button>
@@ -387,7 +386,7 @@ async function exportWithAvailableContent() {
               <div class="order-badge">{{ index + 1 }}</div>
               <div class="thumb"><img v-if="q.image" :src="q.image" loading="lazy" /></div>
               <div style="flex: 1; min-width: 0">
-                <div class="row-text">{{ q.ocr_text || '（无识别文字，可在题库中 OCR）' }}</div>
+                <div class="row-text">{{ q.text || '（暂无题干文字，可在题库中生成题目文档）' }}</div>
                 <div class="row-meta">
                   <span class="badge badge-gray">{{ q.question_type }}</span>
                   <span class="hint" style="font-size: 11px">难度 {{ q.difficulty }}</span>
@@ -519,7 +518,7 @@ async function exportWithAvailableContent() {
             <img v-if="q.image" :src="q.image" loading="lazy" />
           </button>
           <div style="flex: 1; min-width: 0">
-            <div class="missing-text">{{ q.ocr_text || '（无识别文字）' }}</div>
+            <div class="missing-text">{{ q.text || '（暂无题干文字）' }}</div>
             <div class="hint" style="font-size: 11px">{{ q.question_type }} · {{ paperOf(q)?.title }}</div>
           </div>
           <button class="btn btn-sm" :disabled="missingAiId != null" @click="generateMissingAnswer(q)">
@@ -570,7 +569,7 @@ async function exportWithAvailableContent() {
             <img v-if="q.image" :src="q.image" loading="lazy" />
           </button>
           <div style="flex: 1; min-width: 0">
-            <div class="missing-text">{{ q.ocr_text || '（无识别文字，建议先在题库 OCR）' }}</div>
+            <div class="missing-text">{{ q.text || '（暂无题干文字，建议先在题库生成题目文档）' }}</div>
             <div class="hint" style="font-size: 11px">{{ q.question_type }} · {{ paperOf(q)?.title }}</div>
             <div v-if="contentErrors[q.id]" class="content-missing-error">{{ contentErrors[q.id] }}</div>
           </div>

@@ -1,5 +1,3 @@
-import type { Question } from '../types'
-
 /** 依据题干文字粗略判断题型，切割入库后仍可在题库中修改 */
 export function guessQuestionType(text: string): string {
   const normalized = text.replace(/\s+/g, '')

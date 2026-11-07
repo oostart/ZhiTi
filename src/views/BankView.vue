@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   ArrowRight,
   Brain,
@@ -11,7 +11,6 @@ import {
   Maximize2,
   RotateCcw,
   Save,
-  ScanText,
   Search,
   Sparkles,
   Star,
@@ -25,7 +24,6 @@ import QuestionPaperView from '../components/QuestionPaperView.vue'
 import { addKnowledgePoint, deleteQuestion, paperOf, state, ui, updateQuestion } from '../store'
 import { toast } from '../composables/toast'
 import { analyzeQuestion, generateAnswer, recommendKnowledge } from '../utils/ai'
-import { recognizeImage } from '../utils/ocr'
 import { docToPlainText, recognizeQuestionLayout, summarizeContent } from '../utils/layout'
 import { buildLayoutImage } from '../utils/layoutImage'
 import { mergeContinuationLines } from '../utils/reflow'
@@ -47,13 +45,8 @@ const draft = ref<Question | null>(null)
 const dirty = ref(false)
 const saving = ref(false)
 const aiBusy = ref<'' | 'answer' | 'knowledge' | 'analysis'>('')
-const knowledgeInput = ref('')
 const pendingDelete = ref<Question | null>(null)
 const imagePreview = ref('')
-const ocrBusy = ref(false)
-const ocrProgress = ref(0)
-const ocrStatus = ref('')
-const editorTab = ref<'image' | 'content'>('image')
 const layoutBusy = ref(false)
 const layoutStatus = ref('')
 const pendingLayout = ref(false)
@@ -94,7 +87,7 @@ const filtered = computed(() => {
     if (filterDifficulty.value && String(q.difficulty) !== filterDifficulty.value) return false
     if (filterKnowledge.value && !q.knowledge.includes(filterKnowledge.value)) return false
     if (kw) {
-      const haystack = [q.ocr_text, q.answer, q.question_type, q.knowledge.join(' '), paper?.title ?? '', paper?.subject ?? '']
+      const haystack = [q.text, q.answer, q.question_type, q.knowledge.join(' '), paper?.title ?? '', paper?.subject ?? '']
         .join(' ')
         .toLowerCase()
       if (!haystack.includes(kw)) return false
@@ -184,7 +177,6 @@ async function openQuestion(question: Question) {
     regions: [...question.regions],
     content: question.content ? (JSON.parse(JSON.stringify(question.content)) as ContentDoc) : undefined
   }
-  editorTab.value = question.content ? 'content' : 'image'
   paperOpen.value = false
   await nextTick()
   suppressDirty = false
@@ -197,7 +189,7 @@ async function saveDraft(silent = false) {
   try {
     const current = draft.value
     await updateQuestion(current.id, {
-      ocr_text: current.content ? docToPlainText(current.content) : current.ocr_text,
+      text: current.content ? docToPlainText(current.content) : current.text,
       content: current.content,
       answer: current.answer,
       difficulty: current.difficulty,
@@ -217,29 +209,11 @@ async function saveDraft(silent = false) {
   }
 }
 
-function addKnowledge(name?: string) {
-  if (!draft.value) return
-  const raw = (name ?? knowledgeInput.value).trim()
-  if (!raw) return
-  if (!draft.value.knowledge.includes(raw)) draft.value.knowledge.push(raw)
-  knowledgeInput.value = ''
-}
-
-function removeKnowledge(name: string) {
-  if (!draft.value) return
-  draft.value.knowledge = draft.value.knowledge.filter((k) => k !== name)
-}
-
-function setDifficulty(level: number) {
-  if (!draft.value) return
-  draft.value.difficulty = level
-}
-
 async function runAi(kind: 'answer' | 'knowledge' | 'analysis') {
   if (!draft.value) return
-  const text = draft.value.ocr_text.trim()
+  const text = (draft.value.content ? docToPlainText(draft.value.content) : draft.value.text).trim()
   if (!text) {
-    toast('题目还没有文字内容，请先 OCR 识别或手动填写题干', 'warning')
+    toast('题目还没有文字内容，请先生成题目文档或手动补充题干', 'warning')
     return
   }
   aiBusy.value = kind
@@ -288,32 +262,10 @@ async function runAi(kind: 'answer' | 'knowledge' | 'analysis') {
   }
 }
 
-async function runOcr() {
-  if (!draft.value) return
-  ocrBusy.value = true
-  ocrProgress.value = 0.01
-  ocrStatus.value = '正在准备 OCR…'
-  try {
-    const text = await recognizeImage(draft.value.image, state.settings.ocr.lang || 'chi_sim+eng', (progress, status) => {
-      ocrProgress.value = progress
-      ocrStatus.value = status
-    })
-    draft.value.ocr_text = text
-    dirty.value = true
-    toast('OCR 识别完成，请校对后保存', 'success')
-  } catch (error) {
-    toast('OCR 识别失败：' + ((error as Error).message || '请检查网络连接'), 'error', 5000)
-  } finally {
-    ocrBusy.value = false
-    ocrProgress.value = 0
-    ocrStatus.value = ''
-  }
-}
-
 function updateContent(doc: ContentDoc) {
   if (!draft.value) return
   draft.value.content = doc
-  draft.value.ocr_text = docToPlainText(doc)
+  draft.value.text = docToPlainText(doc)
   dirty.value = true
 }
 
@@ -332,6 +284,18 @@ function updateAnalysis(value: string) {
 function updateKnowledge(value: string[]) {
   if (!draft.value) return
   draft.value.knowledge = value
+  dirty.value = true
+}
+
+function updateQuestionType(value: string) {
+  if (!draft.value) return
+  draft.value.question_type = value
+  dirty.value = true
+}
+
+function updateDifficulty(value: number) {
+  if (!draft.value) return
+  draft.value.difficulty = value
   dirty.value = true
 }
 
@@ -354,7 +318,7 @@ function openPaper() {
   const merged = mergeContinuationLines(draft.value.content)
   if (merged.changed) {
     draft.value.content = merged.doc
-    draft.value.ocr_text = docToPlainText(merged.doc)
+    draft.value.text = docToPlainText(merged.doc)
     dirty.value = true
     toast('已合并断行，保存后生效', 'success', 2400)
   }
@@ -377,8 +341,7 @@ async function runLayout() {
     const result = await recognizeQuestionLayout(state.settings.ai, recognitionImage)
     if (!draft.value || draft.value.id !== question.id) return
     draft.value.content = result.content
-    draft.value.ocr_text = result.text
-    editorTab.value = 'content'
+    draft.value.text = result.text
     dirty.value = true
     const summary = `${result.mathCount} 个公式、${result.figureCount} 个图形`
     if (result.warnings.length) {
@@ -529,7 +492,7 @@ onBeforeUnmount(() => {
               <div class="q-thumb-index">#{{ state.questions.findIndex((q) => q.id === question.id) + 1 }}</div>
             </div>
             <div class="q-body">
-              <div class="q-text" v-html="question.ocr_text ? highlight(snippet(question.ocr_text)) : '<span style=\'color:#a2a9b8\'>（无识别文字，可在编辑面板 OCR）</span>'"></div>
+              <div class="q-text" v-html="question.text ? highlight(snippet(question.text)) : '<span style=\'color:#a2a9b8\'>（暂无题干文字，可生成题目文档）</span>'"></div>
               <div class="q-meta">
                 <span class="badge" :class="TYPE_BADGE_CLASS[question.question_type] || 'badge-gray'">{{ question.question_type }}</span>
                 <span class="chip" style="height: 20px; font-size: 11px">
@@ -556,7 +519,7 @@ onBeforeUnmount(() => {
       <div v-if="!draft" class="empty" style="padding: 60px 16px">
         <div class="empty-icon"><Brain :size="22" /></div>
         <div class="empty-title">题目编辑面板</div>
-        <div class="empty-desc">从左侧选择一道题目，可将题目结构化为「文字 + 公式 + 图形」，校对后补充答案与知识点。</div>
+        <div class="empty-desc">从左侧选择一道题目，可将题目结构化为「文字 + 公式 + 图形」，校对后可在题目文档中完善答案、知识点与解析。</div>
       </div>
 
       <template v-else>
@@ -574,45 +537,12 @@ onBeforeUnmount(() => {
           </button>
         </div>
 
-        <div class="editor-tabs">
-          <button class="editor-tab" :class="{ active: editorTab === 'image' }" @click="editorTab = 'image'">原图 / 文字</button>
-          <button class="editor-tab" :class="{ active: editorTab === 'content' }" @click="editorTab = 'content'">
-            结构化内容
-            <span v-if="draft.content" class="tab-badge">已识别</span>
-          </button>
-        </div>
-
-        <template v-if="editorTab === 'image'">
-          <div class="editor-image" @click="imagePreview = draft?.image || ''">
-            <img v-if="draft.image" :src="draft.image" />
+        <div class="content-pane">
+          <div v-if="draft.image" class="editor-image" title="点击放大查看" @click="imagePreview = draft.image">
+            <img :src="draft.image" alt="题目原图" />
           </div>
+          <div v-else class="editor-image-placeholder">暂无题目原图</div>
 
-          <div v-if="draft.content" class="field">
-            <label class="label">正文（由结构化内容自动生成）</label>
-            <textarea class="textarea" rows="4" :value="docToPlainText(draft.content)" readonly />
-            <div class="hint" style="margin-top: 4px">如需修改文字，请切换到「结构化内容」。</div>
-          </div>
-
-          <div v-else class="field">
-            <div class="label-row">
-              <label class="label" style="margin: 0">题干文字（OCR 结果）</label>
-              <button class="btn btn-ghost btn-sm" :disabled="ocrBusy" @click="runOcr">
-                <Loader2 v-if="ocrBusy" :size="12" class="spin" />
-                <ScanText v-else :size="12" /> OCR 识别
-              </button>
-            </div>
-            <textarea v-model="draft.ocr_text" class="textarea" rows="5" placeholder="识别后的题干内容，支持人工校对…" />
-            <div v-if="ocrBusy" class="ocr-progress">
-              <div class="progress" style="flex: 1">
-                <div class="progress-bar" :style="{ width: Math.round(ocrProgress * 100) + '%' }" />
-              </div>
-              <span class="hint">{{ ocrStatus }} {{ Math.round(ocrProgress * 100) }}%</span>
-            </div>
-            <div class="hint" style="margin-top: 4px">{{ draft.ocr_text.length }} 字 · OCR 结果请务必人工校对</div>
-          </div>
-        </template>
-
-        <div v-else class="content-pane">
           <div v-if="!draft.content" class="content-empty">
             <div class="content-empty-title">还没有结构化内容</div>
             <div class="hint">把题目识别成「文字 + 公式 + 图形块」，识别后可逐题对照校对。</div>
@@ -633,7 +563,7 @@ onBeforeUnmount(() => {
               <div class="content-toolbar-actions">
                 <button class="btn btn-ghost btn-sm" :disabled="layoutBusy" @click="requestLayout">
                   <Loader2 v-if="layoutBusy" :size="12" class="spin" />
-                  <ScanText v-else :size="12" /> 重新识别
+                  <Sparkles v-else :size="12" /> 重新识别
                 </button>
                 <button class="btn btn-primary btn-sm" @click="openPaper">
                   <Maximize2 :size="12" /> 打开题目文档
@@ -648,61 +578,6 @@ onBeforeUnmount(() => {
           </template>
         </div>
 
-        <div class="field">
-          <label class="label">参考答案</label>
-          <textarea v-model="draft.answer" class="textarea" rows="3" placeholder="尚未填写答案，可使用 AI 生成后校对" />
-        </div>
-
-        <div class="row-2">
-          <div class="field">
-            <label class="label">题型</label>
-            <select v-model="draft.question_type" class="select">
-              <option v-for="t in QUESTION_TYPES" :key="t">{{ t }}</option>
-            </select>
-          </div>
-          <div class="field">
-            <label class="label">难度</label>
-            <div class="difficulty-picker">
-              <button
-                v-for="level in 5"
-                :key="level"
-                class="difficulty-dot"
-                :class="{ active: draft.difficulty >= level }"
-                :title="DIFFICULTY_LABELS[level]"
-                @click.stop="setDifficulty(level)"
-              >
-                <Star :size="14" />
-              </button>
-            </div>
-            <div class="hint" style="margin-top: 2px">{{ DIFFICULTY_LABELS[draft.difficulty] }}</div>
-          </div>
-        </div>
-
-        <div class="field">
-          <label class="label">知识点</label>
-          <div class="knowledge-chips">
-            <span v-for="name in draft.knowledge" :key="name" class="chip active">
-              {{ name }}
-              <button class="chip-remove" @click="removeKnowledge(name)"><X :size="11" /></button>
-            </span>
-            <span v-if="!draft.knowledge.length" class="hint">尚未标注知识点</span>
-          </div>
-          <div class="knowledge-add">
-            <input
-              v-model="knowledgeInput"
-              class="input"
-              placeholder="输入知识点，回车添加"
-              @keydown.enter.prevent="addKnowledge()"
-            />
-            <button class="btn btn-sm" @click="addKnowledge()">添加</button>
-          </div>
-        </div>
-
-        <div class="field">
-          <label class="label">题目理解（AI 分析）</label>
-          <textarea v-model="draft.analysis" class="textarea" rows="4" placeholder="考查知识点、情境模型与解题思路…" />
-        </div>
-
         <div class="editor-actions">
           <button class="btn btn-danger btn-sm" @click="pendingDelete = draft"><Trash2 :size="13" /> 删除题目</button>
           <span class="hint" style="margin-left: auto"><span class="kbd">Ctrl</span> + <span class="kbd">S</span> 保存</span>
@@ -712,7 +587,7 @@ onBeforeUnmount(() => {
 
     <AppModal v-if="pendingDelete" title="删除这道题目？" @close="pendingDelete = null">
       <template #description>题目图片与文字记录将被移除，无法恢复。</template>
-      <div class="hint">{{ snippet(pendingDelete.ocr_text || '（无文字）') }}</div>
+      <div class="hint">{{ snippet(pendingDelete.text || '（无文字）') }}</div>
       <template #actions>
         <button class="btn" @click="pendingDelete = null">取消</button>
         <button class="btn btn-danger" @click="confirmDelete"><Trash2 :size="14" /> 确认删除</button>
@@ -736,11 +611,15 @@ onBeforeUnmount(() => {
       :answer="draft.answer"
       :analysis="draft.analysis"
       :knowledge="draft.knowledge"
+      :question-type="draft.question_type"
+      :difficulty="draft.difficulty"
       :ai-busy="aiBusy"
       @update:model-value="updateContent"
       @update:answer="updateAnswer"
       @update:analysis="updateAnalysis"
       @update:knowledge="updateKnowledge"
+      @update:question-type="updateQuestionType"
+      @update:difficulty="updateDifficulty"
       @ai="runAi"
       @save="saveDraft()"
       @relayout="relayoutFromPaper"
@@ -907,43 +786,17 @@ onBeforeUnmount(() => {
   object-position: top;
   max-height: 220px;
 }
-.editor-tabs {
+.editor-image-placeholder {
   display: flex;
-  gap: 6px;
-  margin-bottom: 12px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid var(--border);
-}
-.editor-tab {
-  display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 5px 10px;
-  border: 1px solid transparent;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--text-2);
+  justify-content: center;
+  height: 96px;
+  margin-bottom: 14px;
+  border: 1px dashed var(--border);
+  border-radius: 9px;
+  background: #fafbfe;
+  color: var(--text-3);
   font-size: 12px;
-  cursor: pointer;
-  transition: background 0.12s;
-}
-.editor-tab:hover {
-  background: #f4f5fb;
-}
-.editor-tab.active {
-  border-color: #d7d5fb;
-  background: #eef2ff;
-  color: #4338ca;
-  font-weight: 600;
-}
-.tab-badge {
-  padding: 0 5px;
-  border-radius: 999px;
-  background: #dcfce7;
-  color: #15803d;
-  font-size: 10px;
-  line-height: 16px;
-  font-weight: 600;
 }
 .content-pane {
   margin-bottom: 14px;
@@ -1000,12 +853,6 @@ onBeforeUnmount(() => {
   background: linear-gradient(to bottom, rgba(255, 255, 255, 0), #fff);
   pointer-events: none;
 }
-.label-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 6px;
-}
 .chip-remove {
   border: 0;
   background: transparent;
@@ -1019,39 +866,6 @@ onBeforeUnmount(() => {
 .chip-remove:hover {
   opacity: 1;
 }
-.knowledge-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 8px;
-  min-height: 24px;
-  align-items: center;
-}
-.knowledge-add {
-  display: flex;
-  gap: 6px;
-}
-.difficulty-picker {
-  display: flex;
-  gap: 3px;
-  padding-top: 3px;
-}
-.difficulty-dot {
-  border: 0;
-  background: transparent;
-  color: #d5dae6;
-  padding: 3px;
-  border-radius: 5px;
-  transition: color 0.12s, background 0.12s;
-  display: grid;
-  place-items: center;
-}
-.difficulty-dot:hover {
-  background: #f4f5fb;
-}
-.difficulty-dot.active {
-  color: #f59e0b;
-}
 .editor-actions {
   display: flex;
   align-items: center;
@@ -1059,12 +873,6 @@ onBeforeUnmount(() => {
   margin-top: 18px;
   padding-top: 14px;
   border-top: 1px solid var(--border);
-}
-.ocr-progress {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 6px;
 }
 .spin {
   animation: spin 0.8s linear infinite;

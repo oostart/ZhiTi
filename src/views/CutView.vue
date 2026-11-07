@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
 import {
   ChevronLeft,
@@ -8,7 +8,6 @@ import {
   Loader2,
   Merge,
   Plus,
-  ScanText,
   Scissors,
   Trash2,
   ZoomIn,
@@ -18,7 +17,6 @@ import { canvasToDataUrl, composeDataUrls, cropCanvas } from '../utils/image'
 import { extractTextFromRegions, getPaperDocument, renderPageToCanvas } from '../utils/pdf'
 import { createQuestion, deleteQuestion, state, ui, updateQuestion } from '../store'
 import { toast } from '../composables/toast'
-import { recognizeImage } from '../utils/ocr'
 import { guessQuestionType } from '../utils/questionType'
 import type { Question, Region } from '../types'
 
@@ -34,7 +32,6 @@ const draftBox = ref<Region | null>(null)
 const pendingBoxes = ref<Region[]>([])
 const mergeTargetId = ref<number | null>(null)
 const generating = ref(false)
-const ocrProgress = reactive<Record<number, number>>({})
 const baseWidth = ref(780)
 const stageRef = ref<HTMLElement>()
 const spaceHeld = ref(false)
@@ -259,8 +256,8 @@ async function appendToQuestion(target: Question, regions: Region[]): Promise<Qu
   const merged = [...target.regions, ...regions]
   const image = await buildImage(merged)
   const text = await extractTextFromRegions(ui.activePaperId, doc.value, merged)
-  await updateQuestion(target.id, { regions: merged, image, ocr_text: text })
-  return { ...target, regions: merged, image, ocr_text: text }
+  await updateQuestion(target.id, { regions: merged, image, text })
+  return { ...target, regions: merged, image, text }
 }
 
 async function saveRegions(
@@ -285,13 +282,13 @@ async function saveRegions(
     paper_id: ui.activePaperId,
     image,
     regions,
-    ocr_text: text,
+    text,
     question_type: guessQuestionType(text),
     difficulty: 3
   })
   if (options.silent) return created
   const count = state.questions.filter((q) => q.paper_id === ui.activePaperId).length
-  if (!text.trim()) toast('已生成题目。该页可能是扫描件，文本层为空，可点击「OCR」识别', 'warning', 4200)
+  if (!text.trim()) toast('已生成题目。该页可能是扫描件，文本层为空，可在题库中生成题目文档', 'warning', 4200)
   else toast(`已生成第 ${count} 题`, 'success')
   return created
 }
@@ -306,7 +303,7 @@ async function createFromPending() {
     if (!created) return
     const count = state.questions.filter((q) => q.paper_id === ui.activePaperId).length
     const regionCount = created.regions.length
-    if (!created.ocr_text.trim()) toast('已生成题目。该页可能是扫描件，文本层为空，可点击「OCR」识别', 'warning', 4200)
+    if (!created.text.trim()) toast('已生成题目。该页可能是扫描件，文本层为空，可在题库中生成题目文档', 'warning', 4200)
     else if (regionCount > 1) toast(`已生成第 ${count} 题，含 ${regionCount} 个区域`, 'success')
     else toast(`已生成第 ${count} 题`, 'success')
   } catch (error) {
@@ -336,26 +333,6 @@ async function appendPending() {
     toast('追加失败：' + ((error as Error).message || '未知错误'), 'error')
   } finally {
     generating.value = false
-  }
-}
-
-async function runOcr(question: Question) {
-  ocrProgress[question.id] = 0.01
-  try {
-    const lang = state.settings.ocr.lang || 'chi_sim+eng'
-    const text = await recognizeImage(question.image, lang, (progress) => {
-      ocrProgress[question.id] = Math.max(0.01, progress)
-    })
-    if (!text) {
-      toast('未识别到文字，请尝试调整题目图片清晰度', 'warning')
-      return
-    }
-    await updateQuestion(question.id, { ocr_text: text })
-    toast(`OCR 完成，识别出 ${text.length} 个字符`, 'success')
-  } catch (error) {
-    toast('OCR 识别失败：' + ((error as Error).message || '请检查网络连接'), 'error', 4200)
-  } finally {
-    delete ocrProgress[question.id]
   }
 }
 
@@ -595,16 +572,10 @@ onBeforeUnmount(() => {
               </div>
               <div class="question-row-meta">
                 第 {{ question.regions.map((r) => r.page).join('、') }} 页 · {{ question.regions.length }} 个区域 ·
-                {{ question.ocr_text ? question.ocr_text.slice(0, 24) : '无文本（可用 OCR）' }}
-              </div>
-              <div v-if="ocrProgress[question.id] != null" class="progress" style="margin-top: 6px">
-                <div class="progress-bar" :style="{ width: Math.round(ocrProgress[question.id] * 100) + '%' }" />
+                {{ question.text ? question.text.slice(0, 24) : '无文本' }}
               </div>
             </div>
             <div class="question-row-actions" @click.stop>
-              <button class="btn btn-ghost btn-icon" title="OCR 识别文字" :disabled="ocrProgress[question.id] != null" @click="runOcr(question)">
-                <ScanText :size="14" />
-              </button>
               <button class="btn btn-ghost btn-icon" title="删除题目" @click="removeQuestion(question)">
                 <Trash2 :size="14" />
               </button>
