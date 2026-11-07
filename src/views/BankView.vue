@@ -27,7 +27,7 @@ import { analyzeQuestion, generateAnswer, recommendKnowledge } from '../utils/ai
 import { docToPlainText, recognizeQuestionLayout, summarizeContent } from '../utils/layout'
 import { buildLayoutImage } from '../utils/layoutImage'
 import { mergeContinuationLines } from '../utils/reflow'
-import { DIFFICULTY_LABELS, QUESTION_TYPES, SUBJECTS, TYPE_BADGE_CLASS, GRADES, type ContentDoc, type Question } from '../types'
+import { DIFFICULTY_LABELS, QUESTION_TYPES, TYPE_BADGE_CLASS, GRADES, type ContentDoc, type Question } from '../types'
 
 const keyword = ref(ui.bankKeyword || '')
 const filterSubject = ref('')
@@ -73,14 +73,26 @@ watch(keyword, (value) => {
 })
 
 const years = computed(() => Array.from(new Set(state.papers.map((p) => p.year))).sort((a, b) => b - a))
+const subjectOptions = computed(() =>
+  Array.from(new Set(state.papers.map((p) => p.subject.trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'zh-CN'))
+)
+const gradeOptions = computed(() => {
+  const rank = (grade: string) => {
+    const index = GRADES.indexOf(grade)
+    return index === -1 ? GRADES.length : index
+  }
+  return Array.from(new Set(state.papers.map((p) => p.grade.trim()).filter(Boolean))).sort(
+    (a, b) => rank(a) - rank(b) || a.localeCompare(b, 'zh-CN')
+  )
+})
 const knowledgeOptions = computed(() => Array.from(new Set(state.questions.flatMap((q) => q.knowledge))).sort((a, b) => a.localeCompare(b, 'zh-CN')))
 
 const filtered = computed(() => {
   const kw = keyword.value.trim().toLowerCase()
   const list = state.questions.filter((q) => {
     const paper = paperOf(q)
-    if (filterSubject.value && paper?.subject !== filterSubject.value) return false
-    if (filterGrade.value && paper?.grade !== filterGrade.value) return false
+    if (filterSubject.value && (paper?.subject ?? '').trim() !== filterSubject.value) return false
+    if (filterGrade.value && (paper?.grade ?? '').trim() !== filterGrade.value) return false
     if (filterYear.value && String(paper?.year) !== filterYear.value) return false
     if (filterPaper.value && String(q.paper_id) !== filterPaper.value) return false
     if (filterType.value && q.question_type !== filterType.value) return false
@@ -108,6 +120,14 @@ const hasFilters = computed(
 
 watch(filtered, () => {
   pageIndex.value = Math.min(pageIndex.value, totalPages.value)
+})
+
+watch(subjectOptions, (options) => {
+  if (filterSubject.value && !options.includes(filterSubject.value)) filterSubject.value = ''
+})
+
+watch(gradeOptions, (options) => {
+  if (filterGrade.value && !options.includes(filterGrade.value)) filterGrade.value = ''
 })
 
 function escapeHtml(text: string): string {
@@ -381,7 +401,17 @@ function onKeydown(event: KeyboardEvent) {
   }
 }
 
-onMounted(() => window.addEventListener('keydown', onKeydown))
+onMounted(async () => {
+  window.addEventListener('keydown', onKeydown)
+  const pendingId = ui.pendingPaperId
+  if (pendingId == null) return
+  ui.pendingPaperId = null
+  const question = state.questions.find((q) => q.id === pendingId)
+  if (!question) return
+  await openQuestion(question)
+  if (question.content) openPaper()
+  else toast('该题还没有题目文档，请先生成题目文档', 'warning', 4200)
+})
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown)
   if (dirty.value) void flushDraft(true)
@@ -401,11 +431,11 @@ onBeforeUnmount(() => {
 
           <select v-model="filterSubject" class="select filter-select">
             <option value="">全部学科</option>
-            <option v-for="s in SUBJECTS" :key="s">{{ s }}</option>
+            <option v-for="s in subjectOptions" :key="s">{{ s }}</option>
           </select>
           <select v-model="filterGrade" class="select filter-select">
             <option value="">全部年级</option>
-            <option v-for="g in GRADES" :key="g">{{ g }}</option>
+            <option v-for="g in gradeOptions" :key="g">{{ g }}</option>
           </select>
           <select v-model="filterYear" class="select filter-select">
             <option value="">全部年份</option>

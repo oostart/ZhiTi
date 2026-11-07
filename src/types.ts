@@ -92,7 +92,6 @@ export interface ExportOptions {
   fileName: string
 }
 
-export const SUBJECTS = ['语文', '数学', '英语', '物理', '化学', '生物', '政治', '历史', '地理']
 export const GRADES = [
   '一年级',
   '二年级',

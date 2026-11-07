@@ -3,6 +3,7 @@ import { computed, reactive, ref, watch } from 'vue'
 import {
   AlertTriangle,
   ArrowLeft,
+  ArrowRight,
   Check,
   ChevronDown,
   ChevronUp,
@@ -24,7 +25,6 @@ import { writeFileAt } from '../utils/storage'
 import { save } from '@tauri-apps/plugin-dialog'
 import { isTauri } from '@tauri-apps/api/core'
 import { paperOf, state, ui, updateQuestion } from '../store'
-import { generateAnswer } from '../utils/ai'
 import { hasContentDoc, recognizeQuestionLayout } from '../utils/layout'
 import { buildLayoutImage } from '../utils/layoutImage'
 import { toast } from '../composables/toast'
@@ -38,9 +38,6 @@ const dragIndex = ref<number | null>(null)
 const showLibrary = ref(false)
 const libraryKeyword = ref('')
 const missingOpen = ref(false)
-const missingDrafts = reactive<Record<number, string>>({})
-const missingSaving = ref(false)
-const missingAiId = ref<number | null>(null)
 const missingPreviewId = ref<number | null>(null)
 const contentMissingOpen = ref(false)
 const contentBusyId = ref<number | null>(null)
@@ -125,53 +122,14 @@ function toggleAnswers() {
 
 function openMissingAnswers() {
   if (!missingQuestions.value.length) return
-  for (const q of missingQuestions.value) {
-    if (missingDrafts[q.id] == null) missingDrafts[q.id] = q.answer
-  }
   missingOpen.value = true
 }
 
-async function saveMissingAnswers() {
-  const targets = missingQuestions.value.filter((q) => (missingDrafts[q.id] ?? '').trim())
-  if (!targets.length) {
-    missingOpen.value = false
-    return
-  }
-  missingSaving.value = true
-  try {
-    for (const q of targets) {
-      await updateQuestion(q.id, { answer: missingDrafts[q.id].trim() })
-    }
-    toast(`已保存 ${targets.length} 道题的参考答案`, 'success')
-    missingOpen.value = false
-  } catch (error) {
-    toast('保存答案失败：' + ((error as Error).message || '未知错误'), 'error', 5200)
-  } finally {
-    missingSaving.value = false
-  }
-}
-
-async function generateMissingAnswer(question: Question) {
-  const text = question.text.trim()
-  if (!text) {
-    toast('该题还没有文字内容，无法生成答案，请先在题库中生成题目文档', 'warning')
-    return
-  }
-  missingAiId.value = question.id
-  try {
-    const paper = paperOf(question)
-    missingDrafts[question.id] = await generateAnswer(state.settings.ai, {
-      text,
-      subject: paper?.subject ?? '',
-      grade: paper?.grade ?? '',
-      type: question.question_type
-    })
-    toast('AI 已生成答案，请核对后保存', 'success')
-  } catch (error) {
-    toast((error as Error).message || 'AI 调用失败', 'error', 5200)
-  } finally {
-    missingAiId.value = null
-  }
+function goToQuestion(question: Question) {
+  missingOpen.value = false
+  ui.pendingPaperId = question.id
+  ui.activeQuestionId = question.id
+  ui.view = 'bank'
 }
 
 function addQuestion(id: number) {
@@ -502,9 +460,9 @@ async function exportWithAvailableContent() {
     </aside>
   </div>
 
-  <AppModal v-if="missingOpen" title="有题目还没有填写参考答案" :width="680" @close="missingOpen = false">
+  <AppModal v-if="missingOpen" title="有题目还没有填写参考答案" :width="640" @close="missingOpen = false">
     <template #description>
-      已勾选「包含参考答案」，以下 {{ missingQuestions.length }} 道题没有答案，导出时会跳过它们的答案。可在下方补写，或用 AI 生成后核对保存。
+      已勾选「包含参考答案」，以下 {{ missingQuestions.length }} 道题没有答案，导出时会跳过它们的答案。请前往题目文档补充并保存，返回后列表会自动刷新。
     </template>
 
     <div class="missing-list">
@@ -521,22 +479,16 @@ async function exportWithAvailableContent() {
             <div class="missing-text">{{ q.text || '（暂无题干文字）' }}</div>
             <div class="hint" style="font-size: 11px">{{ q.question_type }} · {{ paperOf(q)?.title }}</div>
           </div>
-          <button class="btn btn-sm" :disabled="missingAiId != null" @click="generateMissingAnswer(q)">
-            <Loader2 v-if="missingAiId === q.id" :size="12" class="spin" />
-            <Sparkles v-else :size="12" /> AI 生成
+          <button class="btn btn-sm" @click="goToQuestion(q)">
+            <ArrowRight :size="12" /> 去查看
           </button>
         </div>
         <img v-if="missingPreviewId === q.id && q.image" class="missing-preview" :src="q.image" />
-        <textarea v-model="missingDrafts[q.id]" class="textarea" rows="2" placeholder="填写参考答案…" />
       </div>
     </div>
 
     <template #actions>
-      <button class="btn" @click="missingOpen = false">暂不处理</button>
-      <button class="btn btn-primary" :disabled="missingSaving" @click="saveMissingAnswers">
-        <Loader2 v-if="missingSaving" :size="14" class="spin" />
-        保存并关闭
-      </button>
+      <button class="btn" @click="missingOpen = false">关闭</button>
     </template>
   </AppModal>
 

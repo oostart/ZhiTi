@@ -9,6 +9,8 @@ export interface UiState {
   view: ViewKey
   activePaperId: number | null
   activeQuestionId: number | null
+  /** 从其他视图跳入题库后，需要自动打开的题目文档 id */
+  pendingPaperId: number | null
   exportIds: number[]
   bankKeyword: string
   /** 每份试卷最后浏览的页码，切换视图/试卷后恢复 */
@@ -38,6 +40,7 @@ export const ui = reactive<UiState>({
   view: 'import',
   activePaperId: null,
   activeQuestionId: null,
+  pendingPaperId: null,
   exportIds: [],
   bankKeyword: '',
   cutPageByPaper: {}
@@ -118,12 +121,6 @@ async function cleanupLegacyPresetKnowledge(): Promise<void> {
   await db.put('settings', { key: PRESET_CLEANUP_KEY, value: true })
 }
 
-/** 兼容旧版本字段：把 ocr_text 迁移为 text，避免存量题目丢失题干文字 */
-function normalizeQuestion(question: Question & { ocr_text?: string }): Question {
-  const { ocr_text, ...rest } = question
-  return { ...rest, text: question.text ?? ocr_text ?? '' }
-}
-
 export async function initStore(): Promise<void> {
   if (state.ready) return
   const [papers, questions, knowledge, settings] = await Promise.all([
@@ -133,9 +130,7 @@ export async function initStore(): Promise<void> {
     repositories.settings()
   ])
   state.papers = papers.sort((a, b) => b.created_at.localeCompare(a.created_at))
-  state.questions = questions
-    .map((question) => normalizeQuestion(question as Question & { ocr_text?: string }))
-    .sort((a, b) => a.order - b.order)
+  state.questions = questions.sort((a, b) => a.order - b.order)
   state.knowledge = knowledge.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
   state.settings = settings ? { ai: { ...defaultSettings.ai, ...settings.ai } } : structuredClone(defaultSettings)
 
@@ -150,6 +145,7 @@ export async function reloadStore(): Promise<void> {
   state.knowledge = []
   ui.activePaperId = null
   ui.activeQuestionId = null
+  ui.pendingPaperId = null
   ui.exportIds = []
   ui.bankKeyword = ''
   ui.cutPageByPaper = {}

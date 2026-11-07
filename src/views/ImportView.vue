@@ -5,7 +5,7 @@ import { cacheDocument, disposeDocument, readPdfFile, type OpenedPdf } from '../
 import { createPaper, deletePaper, state, ui, updatePaper } from '../store'
 import { toast } from '../composables/toast'
 import AppModal from '../components/AppModal.vue'
-import { SUBJECTS, GRADES, type Paper } from '../types'
+import { type Paper } from '../types'
 
 const fileInput = ref<HTMLInputElement>()
 const opened = shallowRef<OpenedPdf | null>(null)
@@ -20,15 +20,15 @@ const savingEdit = ref(false)
 const form = reactive({
   title: '',
   year: new Date().getFullYear(),
-  subject: '数学',
-  grade: '九年级'
+  subject: '',
+  grade: ''
 })
 
 const editForm = reactive({
   title: '',
   year: new Date().getFullYear(),
-  subject: '数学',
-  grade: '九年级'
+  subject: '',
+  grade: ''
 })
 
 const canImport = computed(() => !!opened.value && form.title.trim().length > 0 && !parsing.value && !importing.value)
@@ -84,8 +84,8 @@ async function doImport() {
     const paper = await createPaper({
       title: form.title.trim(),
       year: Number(form.year) || new Date().getFullYear(),
-      subject: form.subject,
-      grade: form.grade,
+      subject: form.subject.trim(),
+      grade: form.grade.trim(),
       page_count: opened.value.pageCount,
       source_name: selectedFile.value?.name,
       file: opened.value.bytes
@@ -131,8 +131,8 @@ async function saveEdit() {
     await updatePaper(target.id, {
       title,
       year: Number(editForm.year) || target.year,
-      subject: editForm.subject,
-      grade: editForm.grade
+      subject: editForm.subject.trim(),
+      grade: editForm.grade.trim()
     })
     toast('试卷信息已更新', 'success')
     editingPaper.value = null
@@ -216,15 +216,11 @@ function formatDate(iso: string): string {
               </div>
               <div class="field">
                 <label class="label">学科</label>
-                <select v-model="form.subject" class="select">
-                  <option v-for="s in SUBJECTS" :key="s">{{ s }}</option>
-                </select>
+                <input v-model="form.subject" class="input" placeholder="例如：数学" />
               </div>
               <div class="field">
                 <label class="label">年级</label>
-                <select v-model="form.grade" class="select">
-                  <option v-for="g in GRADES" :key="g">{{ g }}</option>
-                </select>
+                <input v-model="form.grade" class="input" placeholder="例如：九年级" />
               </div>
             </div>
             <button class="btn btn-primary btn-lg" style="width: 100%; margin-top: 6px" :disabled="!canImport" @click="doImport">
@@ -296,15 +292,11 @@ function formatDate(iso: string): string {
         </div>
         <div class="field">
           <label class="label">学科</label>
-          <select v-model="editForm.subject" class="select">
-            <option v-for="s in SUBJECTS" :key="s">{{ s }}</option>
-          </select>
+          <input v-model="editForm.subject" class="input" placeholder="例如：数学" />
         </div>
         <div class="field">
           <label class="label">年级</label>
-          <select v-model="editForm.grade" class="select">
-            <option v-for="g in GRADES" :key="g">{{ g }}</option>
-          </select>
+          <input v-model="editForm.grade" class="input" placeholder="例如：九年级" />
         </div>
       </div>
       <template #actions>
