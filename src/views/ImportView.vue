@@ -5,6 +5,7 @@ import { cacheDocument, disposeDocument, readPdfFile, type OpenedPdf } from '../
 import { createPaper, deletePaper, state, ui, updatePaper } from '../store'
 import { toast } from '../composables/toast'
 import AppModal from '../components/AppModal.vue'
+import { subjectName } from '../utils/label'
 import { type Paper } from '../types'
 
 const fileInput = ref<HTMLInputElement>()
@@ -16,6 +17,8 @@ const dragging = ref(false)
 const pendingDelete = ref<number | null>(null)
 const editingPaper = ref<Paper | null>(null)
 const savingEdit = ref(false)
+const subjectTouched = ref(false)
+const editSubjectTouched = ref(false)
 
 const form = reactive({
   title: '',
@@ -31,7 +34,11 @@ const editForm = reactive({
   grade: ''
 })
 
-const canImport = computed(() => !!opened.value && form.title.trim().length > 0 && !parsing.value && !importing.value)
+const subjectMissing = computed(() => !form.subject.trim())
+const editSubjectMissing = computed(() => !editForm.subject.trim())
+const canImport = computed(
+  () => !!opened.value && form.title.trim().length > 0 && !subjectMissing.value && !parsing.value && !importing.value
+)
 
 const fileSizeText = computed(() => {
   if (!selectedFile.value) return ''
@@ -79,6 +86,11 @@ function onDrop(event: DragEvent) {
 
 async function doImport() {
   if (!opened.value) return
+  if (subjectMissing.value) {
+    subjectTouched.value = true
+    toast('请填写学科，题目编号会以「学科 + 序号」展示', 'warning')
+    return
+  }
   importing.value = true
   try {
     const paper = await createPaper({
@@ -97,6 +109,7 @@ async function doImport() {
     opened.value = null
     selectedFile.value = null
     form.title = ''
+    subjectTouched.value = false
     if (fileInput.value) fileInput.value.value = ''
   } catch (error) {
     toast('导入失败：' + ((error as Error).message || '未知错误'), 'error')
@@ -112,6 +125,7 @@ function continueCut(paperId: number) {
 
 function openEdit(paper: Paper) {
   editingPaper.value = paper
+  editSubjectTouched.value = false
   editForm.title = paper.title
   editForm.year = paper.year
   editForm.subject = paper.subject
@@ -124,6 +138,11 @@ async function saveEdit() {
   const title = editForm.title.trim()
   if (!title) {
     toast('试卷标题不能为空', 'warning')
+    return
+  }
+  if (editSubjectMissing.value) {
+    editSubjectTouched.value = true
+    toast('请填写学科，题目编号会以「学科 + 序号」展示', 'warning')
     return
   }
   savingEdit.value = true
@@ -215,8 +234,16 @@ function formatDate(iso: string): string {
                 <input v-model.number="form.year" type="number" class="input" min="1990" max="2100" />
               </div>
               <div class="field">
-                <label class="label">学科</label>
-                <input v-model="form.subject" class="input" placeholder="例如：数学" />
+                <label class="label">学科<span class="req">*</span></label>
+                <input
+                  v-model="form.subject"
+                  class="input"
+                  :class="{ invalid: subjectMissing && subjectTouched }"
+                  placeholder="例如：数学"
+                  @blur="subjectTouched = true"
+                />
+                <div v-if="subjectMissing && subjectTouched" class="field-error">请填写学科，用于生成「物理1」这样的题目编号</div>
+                <div v-else class="hint" style="margin-top: 4px">必填，将作为题目编号前缀</div>
               </div>
               <div class="field">
                 <label class="label">年级</label>
@@ -245,7 +272,7 @@ function formatDate(iso: string): string {
               <div style="flex: 1; min-width: 0">
                 <div class="paper-title" :title="paper.title">{{ paper.title }}</div>
                 <div class="paper-meta">
-                  {{ paper.subject }} · {{ paper.grade }} · {{ paper.year }} 年 · {{ paper.page_count }} 页 ·
+                  {{ subjectName(paper.subject) }} · {{ paper.grade }} · {{ paper.year }} 年 · {{ paper.page_count }} 页 ·
                   {{ questionCount(paper.id) }} 题 · {{ formatDate(paper.created_at) }}
                 </div>
               </div>
@@ -291,8 +318,15 @@ function formatDate(iso: string): string {
           <input v-model.number="editForm.year" type="number" class="input" min="1990" max="2100" />
         </div>
         <div class="field">
-          <label class="label">学科</label>
-          <input v-model="editForm.subject" class="input" placeholder="例如：数学" />
+          <label class="label">学科<span class="req">*</span></label>
+          <input
+            v-model="editForm.subject"
+            class="input"
+            :class="{ invalid: editSubjectMissing && editSubjectTouched }"
+            placeholder="例如：数学"
+            @blur="editSubjectTouched = true"
+          />
+          <div v-if="editSubjectMissing && editSubjectTouched" class="field-error">请填写学科，用于生成「物理1」这样的题目编号</div>
         </div>
         <div class="field">
           <label class="label">年级</label>
@@ -379,6 +413,15 @@ function formatDate(iso: string): string {
 }
 .spin {
   animation: spin 0.8s linear infinite;
+}
+.input.invalid {
+  border-color: #f0a3a3;
+  background: #fff8f8;
+}
+.field-error {
+  margin-top: 4px;
+  font-size: 11.5px;
+  color: #dc2626;
 }
 .paper-list {
   display: flex;

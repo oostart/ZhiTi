@@ -1,9 +1,21 @@
 import { reactive } from 'vue'
 import { repositories, db } from './db'
 import { disposeAllDocuments } from './utils/pdf'
-import type { AppSettings, KnowledgePoint, Paper, Question } from './types'
+import type { AppSettings, KnowledgePoint, Paper, Question, Region } from './types'
 
 export type ViewKey = 'import' | 'cut' | 'bank' | 'export' | 'settings'
+
+/** 标记「添加答案」模式是否进行中；仅用于刷新后提示，不保存区域数据 */
+export const PENDING_ANSWER_FLAG = 'zhiti.pending-answer'
+
+/** 「添加答案」暂存的答案框（仅内存，跨视图传递；刷新页面才会丢失） */
+export interface PendingAnswer {
+  /** 会话内唯一 id，用作渲染 key；界面编号按数组顺序实时重排 */
+  id: number
+  paperId: number
+  region: Region
+  createdAt: string
+}
 
 export interface UiState {
   view: ViewKey
@@ -15,6 +27,9 @@ export interface UiState {
   bankKeyword: string
   /** 每份试卷最后浏览的页码，切换视图/试卷后恢复 */
   cutPageByPaper: Record<number, number>
+  /** 切割页暂存的答案区域，用于跳转题库选择目标题目 */
+  pendingAnswers: PendingAnswer[]
+  activePendingAnswerId: number | null
 }
 
 const defaultSettings: AppSettings = {
@@ -43,8 +58,42 @@ export const ui = reactive<UiState>({
   pendingPaperId: null,
   exportIds: [],
   bankKeyword: '',
-  cutPageByPaper: {}
+  cutPageByPaper: {},
+  pendingAnswers: [],
+  activePendingAnswerId: null
 })
+
+let pendingAnswerSeq = 0
+
+/** 新增一个待处理答案框，并设为当前操作项 */
+export function addPendingAnswer(paperId: number, region: Region): PendingAnswer {
+  pendingAnswerSeq += 1
+  const item: PendingAnswer = {
+    id: pendingAnswerSeq,
+    paperId,
+    region: { ...region },
+    createdAt: new Date().toISOString()
+  }
+  ui.pendingAnswers = [...ui.pendingAnswers, item]
+  ui.activePendingAnswerId = item.id
+  sessionStorage.setItem(PENDING_ANSWER_FLAG, '1')
+  return item
+}
+
+/** 移除一个待处理答案框；还剩其它框时自动选中相邻的一个 */
+export function removePendingAnswer(id: number): void {
+  const index = ui.pendingAnswers.findIndex((item) => item.id === id)
+  if (index === -1) return
+  const rest = ui.pendingAnswers.filter((item) => item.id !== id)
+  ui.pendingAnswers = rest
+  if (ui.activePendingAnswerId === id) {
+    ui.activePendingAnswerId = rest[Math.min(index, rest.length - 1)]?.id ?? null
+  }
+  if (!rest.length) {
+    ui.activePendingAnswerId = null
+    sessionStorage.removeItem(PENDING_ANSWER_FLAG)
+  }
+}
 
 /** 旧版本首次启动时写入的预置知识点目录；现在仅用于一次性清理，不再产生新数据 */
 const LEGACY_SEED_KNOWLEDGE: Record<string, string[]> = {
@@ -149,6 +198,9 @@ export async function reloadStore(): Promise<void> {
   ui.exportIds = []
   ui.bankKeyword = ''
   ui.cutPageByPaper = {}
+  ui.pendingAnswers = []
+  ui.activePendingAnswerId = null
+  sessionStorage.removeItem(PENDING_ANSWER_FLAG)
   await disposeAllDocuments()
   await initStore()
 }
@@ -217,6 +269,10 @@ function toPlainContent(content: Question['content']): Question['content'] {
   return content ? (JSON.parse(JSON.stringify(content)) as NonNullable<Question['content']>) : undefined
 }
 
+function toPlainAnswerBlocks(blocks: Question['answerBlocks']): Question['answerBlocks'] {
+  return blocks?.length ? (JSON.parse(JSON.stringify(blocks)) as NonNullable<Question['answerBlocks']>) : undefined
+}
+
 function nextOrder(): number {
   return state.questions.reduce((max, q) => Math.max(max, q.order), 0) + 1
 }
@@ -229,6 +285,8 @@ export async function createQuestion(input: Partial<Question>): Promise<Question
     regions: (input.regions ?? []).map(toPlainRegion),
     text: input.text ?? '',
     answer: input.answer ?? '',
+    answerImage: input.answerImage,
+    answerBlocks: toPlainAnswerBlocks(input.answerBlocks),
     difficulty: input.difficulty ?? 3,
     question_type: input.question_type ?? '其他',
     created_at: new Date().toISOString(),
@@ -250,6 +308,7 @@ export async function updateQuestion(id: number, patch: Partial<Question>): Prom
   next.regions = next.regions.map(toPlainRegion)
   next.knowledge = [...next.knowledge]
   next.content = toPlainContent(next.content)
+  next.answerBlocks = toPlainAnswerBlocks(next.answerBlocks)
   state.questions[index] = next
   await db.put('questions', next)
 }

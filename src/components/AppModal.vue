@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { X } from 'lucide-vue-next'
 
-defineProps<{ title?: string; width?: number }>()
+defineProps<{ title?: string; width?: number; zIndex?: number }>()
 const emit = defineEmits<{ close: [] }>()
 </script>
 
 <template>
   <teleport to="body">
-    <div class="modal-mask" @mousedown.self="emit('close')">
+    <div class="modal-mask" :style="zIndex ? { zIndex } : undefined" @mousedown.self="emit('close')">
       <div class="modal" :style="{ width: width ? width + 'px' : undefined }">
         <div style="display: flex; align-items: flex-start; gap: 12px">
           <div style="flex: 1">

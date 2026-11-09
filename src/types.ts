@@ -33,6 +33,25 @@ export interface ContentDoc {
   content?: ContentNode[]
 }
 
+/** 参考答案文本块 */
+export interface AnswerTextBlock {
+  type: 'text'
+  /** 已带 LaTeX 定界符的文本行（行内 $...$，独立公式 $$...$$） */
+  text: string
+}
+
+/** 参考答案图片块：只记录裁剪坐标，渲染时从 answerImage 截取，不重复存图 */
+export interface AnswerImageBlock {
+  type: 'image'
+  /** 相对答案原图的归一化裁剪框 [x, y, w, h] */
+  bbox: [number, number, number, number]
+  /** 图片显示宽度占答案区宽度的比例（0.1~1） */
+  width: number
+  align: 'left' | 'center' | 'right'
+}
+
+export type AnswerBlock = AnswerTextBlock | AnswerImageBlock
+
 export interface Question {
   id: number
   paper_id: number | null
@@ -42,6 +61,10 @@ export interface Question {
   /** 题干纯文本（用于搜索、AI 分析与导出兜底） */
   text: string
   answer: string
+  /** 参考答案原图（压缩后的 dataURL）；识别成文字后仍保留备查 */
+  answerImage?: string
+  /** 参考答案结构化块（文字 + 图片），answer 由其派生；旧数据无此字段 */
+  answerBlocks?: AnswerBlock[]
   /** 难度 1-5 */
   difficulty: number
   question_type: string

@@ -6,18 +6,19 @@ import {
   ChevronRight,
   Layers,
   Loader2,
-  Merge,
   Plus,
   Scissors,
+  Sparkles,
   Trash2,
   ZoomIn,
   ZoomOut
 } from 'lucide-vue-next'
 import { canvasToDataUrl, composeDataUrls, cropCanvas } from '../utils/image'
 import { extractTextFromRegions, getPaperDocument, renderPageToCanvas } from '../utils/pdf'
-import { createQuestion, deleteQuestion, state, ui, updateQuestion } from '../store'
+import { addPendingAnswer, createQuestion, deleteQuestion, removePendingAnswer, state, ui } from '../store'
 import { toast } from '../composables/toast'
 import { guessQuestionType } from '../utils/questionType'
+import { answerTag, questionTag, subjectName } from '../utils/label'
 import type { Question, Region } from '../types'
 
 const doc = shallowRef<PDFDocumentProxy | null>(null)
@@ -30,7 +31,6 @@ const rendering = ref(false)
 const zoom = ref(1)
 const draftBox = ref<Region | null>(null)
 const pendingBoxes = ref<Region[]>([])
-const mergeTargetId = ref<number | null>(null)
 const generating = ref(false)
 const baseWidth = ref(780)
 const stageRef = ref<HTMLElement>()
@@ -48,7 +48,19 @@ const pageQuestions = computed(() => questionRegionsOnPage())
 const pendingBoxesOnPage = computed(() =>
   pendingBoxes.value.map((region, index) => ({ region, index })).filter(({ region }) => region.page === page.value)
 )
-const pendingTarget = computed(() => paperQuestions.value.find((q) => q.id === mergeTargetId.value) ?? null)
+/** 当前试卷下的待处理答案框（跨视图保存在 store 中，序号按该试卷内的答案框顺序） */
+const paperPendingAnswers = computed(() =>
+  ui.pendingAnswers
+    .filter((item) => item.paperId === ui.activePaperId)
+    .map((item, index) => ({ item, index }))
+)
+const pendingAnswersOnPage = computed(() =>
+  paperPendingAnswers.value.filter(({ item }) => item.region.page === page.value)
+)
+/** 「添加答案」可用：框选了 1 个新区域，或已有当前试卷的答案框可继续换目标题目 */
+const answerPickReady = computed(
+  () => pendingBoxes.value.length === 1 || (!pendingBoxes.value.length && paperPendingAnswers.value.length > 0)
+)
 const displayWidth = computed(() => Math.round(baseWidth.value * zoom.value))
 
 function questionRegionsOnPage(): { question: Question; index: number; region: Region }[] {
@@ -251,34 +263,11 @@ async function buildImage(regions: Region[]): Promise<string> {
   return await composeDataUrls(parts, 14)
 }
 
-async function appendToQuestion(target: Question, regions: Region[]): Promise<Question> {
-  if (!ui.activePaperId || !doc.value) return target
-  const merged = [...target.regions, ...regions]
-  const image = await buildImage(merged)
-  const text = await extractTextFromRegions(ui.activePaperId, doc.value, merged)
-  await updateQuestion(target.id, { regions: merged, image, text })
-  return { ...target, regions: merged, image, text }
-}
-
-async function saveRegions(
-  regions: Region[],
-  options: { appendToTarget?: boolean; silent?: boolean } = {}
-): Promise<Question | null> {
+async function saveRegions(regions: Region[]): Promise<Question | null> {
   if (!ui.activePaperId || !doc.value) return null
-  const target =
-    options.appendToTarget && mergeTargetId.value
-      ? paperQuestions.value.find((q) => q.id === mergeTargetId.value) ?? null
-      : null
-  if (options.appendToTarget) {
-    if (!target) return null
-    const targetIndex = paperQuestions.value.indexOf(target) + 1
-    const next = await appendToQuestion(target, regions)
-    if (!options.silent) toast(`已追加到第 ${targetIndex} 题，共 ${next.regions.length} 个区域`, 'success')
-    return next
-  }
   const image = await buildImage(regions)
   const text = await extractTextFromRegions(ui.activePaperId, doc.value, regions)
-  const created = await createQuestion({
+  return await createQuestion({
     paper_id: ui.activePaperId,
     image,
     regions,
@@ -286,26 +275,22 @@ async function saveRegions(
     question_type: guessQuestionType(text),
     difficulty: 3
   })
-  if (options.silent) return created
-  const count = state.questions.filter((q) => q.paper_id === ui.activePaperId).length
-  if (!text.trim()) toast('已生成题目。该页可能是扫描件，文本层为空，可在题库中生成题目文档', 'warning', 4200)
-  else toast(`已生成第 ${count} 题`, 'success')
-  return created
 }
 
 async function createFromPending() {
   if (!pendingBoxes.value.length) return
   generating.value = true
   try {
-    const created = await saveRegions([...pendingBoxes.value], { silent: true })
+    const created = await saveRegions([...pendingBoxes.value])
     pendingBoxes.value = []
     draftBox.value = null
     if (!created) return
     const count = state.questions.filter((q) => q.paper_id === ui.activePaperId).length
     const regionCount = created.regions.length
+    const label = questionTag(paper.value?.subject, count)
     if (!created.text.trim()) toast('已生成题目。该页可能是扫描件，文本层为空，可在题库中生成题目文档', 'warning', 4200)
-    else if (regionCount > 1) toast(`已生成第 ${count} 题，含 ${regionCount} 个区域`, 'success')
-    else toast(`已生成第 ${count} 题`, 'success')
+    else if (regionCount > 1) toast(`已生成「${label}」，含 ${regionCount} 个区域`, 'success')
+    else toast(`已生成「${label}」`, 'success')
   } catch (error) {
     toast('生成题目失败：' + ((error as Error).message || '未知错误'), 'error')
   } finally {
@@ -313,43 +298,87 @@ async function createFromPending() {
   }
 }
 
-async function appendPending() {
-  if (!pendingBoxes.value.length) return
-  if (!mergeTargetId.value) {
-    toast('请先在右侧「已切割题目」中选择一个合并目标', 'warning')
+function sameRegion(a: Region, b: Region): boolean {
+  return (
+    a.page === b.page &&
+    Math.abs(a.x - b.x) < 1e-4 &&
+    Math.abs(a.y - b.y) < 1e-4 &&
+    Math.abs(a.w - b.w) < 1e-4 &&
+    Math.abs(a.h - b.h) < 1e-4
+  )
+}
+
+/** 把一个答案框设为当前待处理项；若不在当前页则翻到它所在页 */
+function selectPendingAnswer(id: number) {
+  const item = ui.pendingAnswers.find((answer) => answer.id === id)
+  if (!item) return
+  ui.activePendingAnswerId = id
+  draftBox.value = null
+  if (item.region.page !== page.value) page.value = item.region.page
+}
+
+function dropPendingAnswer(id: number) {
+  const item = ui.pendingAnswers.find((answer) => answer.id === id)
+  if (!item) return
+  const index = ui.pendingAnswers.filter((answer) => answer.paperId === item.paperId).findIndex((answer) => answer.id === id) + 1
+  const subject = state.papers.find((p) => p.id === item.paperId)?.subject
+  removePendingAnswer(id)
+  toast(`已移除「${answerTag(subject, index)}」`, 'info', 2200)
+}
+
+function pickAnswerTarget() {
+  if (!ui.activePaperId) {
+    toast('请先选择一份试卷', 'warning')
     return
   }
-  generating.value = true
-  try {
-    const appended = await saveRegions([...pendingBoxes.value], { appendToTarget: true })
-    if (!appended) {
-      mergeTargetId.value = null
-      toast('所选合并目标已不存在，请重新选择', 'warning')
-      return
-    }
+  const paperId = ui.activePaperId
+  if (pendingBoxes.value.length > 1) {
+    toast('「添加答案」一次只处理一个答案区域，请只保留 1 个框选；多区域请用「创建题目」', 'warning', 3600)
+    return
+  }
+  if (pendingBoxes.value.length === 1) {
+    const region = pendingBoxes.value[0]
+    const existing = ui.pendingAnswers.find((item) => item.paperId === paperId && sameRegion(item.region, region))
+    if (!existing) addPendingAnswer(paperId, region)
+    else ui.activePendingAnswerId = existing.id
     pendingBoxes.value = []
     draftBox.value = null
-  } catch (error) {
-    toast('追加失败：' + ((error as Error).message || '未知错误'), 'error')
-  } finally {
-    generating.value = false
+    ui.view = 'bank'
+    toast(
+      existing ? '该区域已是待处理答案，已设为当前答案框' : '已暂存答案区域，请在题库中选择目标题目',
+      'info',
+      3600
+    )
+    return
   }
+  // 没有新框选时，带着当前（或该试卷最近一个）答案框回题库更换目标题目
+  const current = ui.pendingAnswers.find((item) => item.id === ui.activePendingAnswerId && item.paperId === paperId)
+  const fallback = [...ui.pendingAnswers].reverse().find((item) => item.paperId === paperId)
+  const target = current ?? fallback
+  if (!target) {
+    toast('请先在试卷上框选答案区域', 'warning', 3200)
+    return
+  }
+  ui.activePendingAnswerId = target.id
+  ui.view = 'bank'
+  toast('请选择要填入答案的题目', 'info', 2600)
 }
 
 async function removeQuestion(question: Question) {
   await deleteQuestion(question.id)
-  if (mergeTargetId.value === question.id) mergeTargetId.value = null
   toast('已删除该题目', 'success')
 }
 
-function toggleMergeTarget(question: Question) {
-  mergeTargetId.value = mergeTargetId.value === question.id ? null : question.id
+/** 点击题目列表：定位到该题第一个区域所在页，并在画布上高亮 */
+function focusQuestion(question: Question) {
+  ui.activeQuestionId = question.id
+  const first = [...question.regions].sort((a, b) => a.page - b.page || a.y - b.y)[0]
+  if (first && first.page !== page.value) page.value = first.page
 }
 
 watch(
   () => ui.activePaperId,
   () => {
-    mergeTargetId.value = null
     draftBox.value = null
     pendingBoxes.value = []
     void loadDocument()
@@ -455,7 +484,7 @@ onBeforeUnmount(() => {
               v-for="(item, i) in pageQuestions"
               :key="'box' + item.question.id + '-' + i"
               class="question-box"
-              :class="{ target: item.question.id === mergeTargetId }"
+              :class="{ active: item.question.id === ui.activeQuestionId }"
               :style="{
                 left: item.region.x * 100 + '%',
                 top: item.region.y * 100 + '%',
@@ -463,7 +492,7 @@ onBeforeUnmount(() => {
                 height: item.region.h * 100 + '%'
               }"
             >
-              <span class="question-box-label">#{{ item.index + 1 }}</span>
+              <span class="question-box-label">{{ questionTag(paper?.subject, item.index + 1) }}</span>
             </div>
 
             <div
@@ -478,6 +507,34 @@ onBeforeUnmount(() => {
               }"
             >
               <span class="pending-label">区域 {{ item.index + 1 }}</span>
+            </div>
+
+            <div
+              v-for="entry in pendingAnswersOnPage"
+              :key="'answer' + entry.item.id"
+              class="answer-box"
+              :class="{ active: entry.item.id === ui.activePendingAnswerId }"
+              :style="{
+                left: entry.item.region.x * 100 + '%',
+                top: entry.item.region.y * 100 + '%',
+                width: entry.item.region.w * 100 + '%',
+                height: entry.item.region.h * 100 + '%'
+              }"
+              :title="`${answerTag(paper?.subject, entry.index + 1)} · 点击设为当前答案框`"
+              @pointerdown.stop
+              @click.stop="selectPendingAnswer(entry.item.id)"
+            >
+              <span class="answer-box-label">
+                {{ answerTag(paper?.subject, entry.index + 1) }}
+                <button
+                  class="answer-box-remove"
+                  title="移除该答案框"
+                  @pointerdown.stop
+                  @click.stop="dropPendingAnswer(entry.item.id)"
+                >
+                  ×
+                </button>
+              </span>
             </div>
 
             <div
@@ -499,7 +556,7 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="cut-statusbar">
-        按住拖动画框可连续圈选多个区域（可跨页），选好后点「创建题目」合成一题；也可追加到已有题目。放大后按住空格 + 左键拖动可平移画布。
+        按住拖动画框可连续圈选多个区域（可跨页），选好后点「创建题目」合成一题；框选单个答案区域后可点「添加答案」到题库中选择目标题目。已暂存的答案框会保留在画布上（虚线 · 学科+序号，如「物理1答案」），完成写入或手动取消才移除。放大后按住空格 + 左键拖动可平移画布。
       </div>
     </div>
 
@@ -507,14 +564,16 @@ onBeforeUnmount(() => {
       <div class="inspector-head">
         <div>
           <div style="font-size: 13px; font-weight: 650">切割面板</div>
-          <div class="hint">{{ paper ? `${paper.subject} · ${paper.grade} · ${paper.year} 年` : '未选择试卷' }}</div>
+          <div class="hint">{{ paper ? `${subjectName(paper.subject)} · ${paper.grade} · ${paper.year} 年` : '未选择试卷' }}</div>
         </div>
         <span class="badge badge-indigo">{{ paperQuestions.length }} 题</span>
       </div>
 
-      <div v-if="pendingBoxes.length" class="card pending-card">
-        <div style="font-size: 13px; font-weight: 600; margin-bottom: 4px">已框选 {{ pendingBoxes.length }} 个区域（可跨页合并）</div>
-        <div class="pending-region-list">
+      <div class="card pending-card">
+        <div style="font-size: 13px; font-weight: 600; margin-bottom: 4px">
+          {{ pendingBoxes.length ? `已框选 ${pendingBoxes.length} 个区域（可跨页合并）` : '尚未框选区域' }}
+        </div>
+        <div v-if="pendingBoxes.length" class="pending-region-list">
           <div v-for="(box, i) in pendingBoxes" :key="i" class="pending-region-row">
             <span>
               区域 {{ i + 1 }} · 第 {{ box.page }} 页 · 宽 {{ Math.round(box.w * 100) }}% · 高
@@ -524,29 +583,61 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <div style="display: flex; gap: 7px; flex-wrap: wrap">
-          <button class="btn btn-primary btn-sm" :disabled="generating" @click="createFromPending">
+          <button class="btn btn-primary btn-sm" :disabled="generating || !pendingBoxes.length" @click="createFromPending">
             <Plus :size="13" />
             {{ pendingBoxes.length > 1 ? `创建题目（${pendingBoxes.length} 个区域）` : '创建题目' }}
           </button>
-          <button class="btn btn-sm" :disabled="generating || !mergeTargetId" @click="appendPending">
-            <Merge :size="13" />
-            追加到 {{ pendingTarget ? '第 ' + (paperQuestions.indexOf(pendingTarget) + 1) + ' 题' : '当前题目' }}
+          <button class="btn btn-sm" :disabled="generating || !answerPickReady" @click="pickAnswerTarget">
+            <Sparkles :size="13" />
+            添加答案
           </button>
-          <button class="btn btn-ghost btn-sm" @click="clearPending">清空</button>
+          <button class="btn btn-ghost btn-sm" :disabled="!pendingBoxes.length" @click="clearPending">清空</button>
         </div>
         <div class="hint" style="margin-top: 8px">
-          {{
-            mergeTargetId
-              ? '「创建题目」始终新建一题；点「追加到第 N 题」才会并入所选题目。'
-              : '需先在下方题目列表中选择「合并目标」才能追加。'
-          }}
+          <template v-if="pendingBoxes.length > 1">
+            「添加答案」仅支持一框一题，请只保留 1 个区域；多区域请用「创建题目」。
+          </template>
+          <template v-else-if="pendingBoxes.length === 1">
+            「添加答案」会暂存该区域并跳转题库，在题库中点击目标题目即可识别写入答案。
+          </template>
+          <template v-else-if="paperPendingAnswers.length">
+            「清空」只清当前框选；已暂存的答案框会保留在画布上，点「添加答案」可带当前答案框回题库更换目标题目。
+          </template>
+          <template v-else>
+            先框选区域：「创建题目」新建一题，「添加答案」暂存单个答案区域后到题库中选择目标题目。
+          </template>
+        </div>
+      </div>
+
+      <div v-if="paperPendingAnswers.length" class="card answer-card">
+        <div class="panel-section-title" style="margin-bottom: 6px">
+          <span>待处理答案（{{ paperPendingAnswers.length }}）</span>
+          <span class="hint">点选设为当前答案框</span>
+        </div>
+        <div class="pending-region-list">
+          <div
+            v-for="entry in paperPendingAnswers"
+            :key="entry.item.id"
+            class="answer-region-row"
+            :class="{ active: entry.item.id === ui.activePendingAnswerId }"
+            @click="selectPendingAnswer(entry.item.id)"
+          >
+            <span class="answer-index">{{ answerTag(paper?.subject, entry.index + 1) }}</span>
+            <span class="answer-meta">第 {{ entry.item.region.page }} 页 · 宽 {{ Math.round(entry.item.region.w * 100) }}%</span>
+            <button class="btn btn-ghost btn-icon" title="移除该答案框" @click.stop="dropPendingAnswer(entry.item.id)">
+              <Trash2 :size="13" />
+            </button>
+          </div>
+        </div>
+        <div class="hint" style="margin-top: 6px">
+          答案框在题库完成识别写入或点「取消」后才会移除；移除/完成后其余编号自动重排。
         </div>
       </div>
 
       <div class="panel-section" style="flex: 1">
         <div class="panel-section-title">
           <span>已切割题目</span>
-          <span class="hint">{{ mergeTargetId ? '点击切换合并目标' : '点击设为追加目标' }}</span>
+          <span class="hint">点击定位到该题区域</span>
         </div>
 
         <div v-if="!paperQuestions.length" class="hint" style="padding: 18px 0; text-align: center">
@@ -558,17 +649,16 @@ onBeforeUnmount(() => {
             v-for="(question, index) in paperQuestions"
             :key="question.id"
             class="question-row"
-            :class="{ target: question.id === mergeTargetId }"
-            @click="toggleMergeTarget(question)"
+            :class="{ active: question.id === ui.activeQuestionId }"
+            @click="focusQuestion(question)"
           >
             <div class="q-thumb-mini">
               <img v-if="question.image" :src="question.image" />
             </div>
             <div style="flex: 1; min-width: 0">
               <div class="question-row-title">
-                <span>第 {{ index + 1 }} 题</span>
+                <span>{{ questionTag(paper?.subject, index + 1) }}</span>
                 <span class="badge badge-gray" style="margin-left: 4px">{{ question.question_type }}</span>
-                <span v-if="question.id === mergeTargetId" class="badge badge-indigo" style="margin-left: 4px">合并目标</span>
               </div>
               <div class="question-row-meta">
                 第 {{ question.regions.map((r) => r.page).join('、') }} 页 · {{ question.regions.length }} 个区域 ·
@@ -591,7 +681,7 @@ onBeforeUnmount(() => {
         <div class="hint">
           1. 框选可连续多次，跨页时翻页继续框选；<br />
           2. 选好后点「创建题目」，所有区域按页码顺序纵向拼接成一题；<br />
-          3. 需要并入已有题目时，先在右侧题目列表点选「合并目标」，再点「追加到第 N 题」；直接点「创建题目」总是新建一题。
+          3. 只框选答案区域时，点「添加答案」会暂存该区域并跳转题库，在题库中点选目标题目即可识别写入答案；答案框以虚线「物理1答案」的形式保留在画布上，写入完成或取消后才移除。
         </div>
       </div>
     </aside>
@@ -685,7 +775,7 @@ onBeforeUnmount(() => {
   pointer-events: none;
   transition: border-color 0.15s;
 }
-.question-box.target {
+.question-box.active {
   border-color: #4f46e5;
   border-width: 2px;
   background: rgba(99, 102, 241, 0.1);
@@ -701,6 +791,7 @@ onBeforeUnmount(() => {
   line-height: 15px;
   padding: 0 5px;
   border-radius: 0 0 4px 0;
+  white-space: nowrap;
 }
 .pending-box {
   position: absolute;
@@ -718,6 +809,52 @@ onBeforeUnmount(() => {
   padding: 0 5px;
   line-height: 15px;
   border-radius: 0 0 0 4px;
+}
+.answer-box {
+  position: absolute;
+  border: 2px dashed #f59e0b;
+  background: rgba(245, 158, 11, 0.12);
+  border-radius: 2px;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: border-color 0.15s, background 0.15s;
+}
+.answer-box:hover {
+  background: rgba(245, 158, 11, 0.18);
+}
+.answer-box.active {
+  border-color: #d97706;
+  border-style: solid;
+  background: rgba(245, 158, 11, 0.22);
+  box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.35);
+}
+.answer-box-label {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 4px;
+  background: #f59e0b;
+  color: #fff;
+  font-size: 10px;
+  line-height: 15px;
+  border-radius: 0 0 0 4px;
+  white-space: nowrap;
+}
+.answer-box-remove {
+  border: 0;
+  padding: 0 1px;
+  background: transparent;
+  color: #fff;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.85;
+}
+.answer-box-remove:hover {
+  opacity: 1;
 }
 .render-mask {
   position: absolute;
@@ -784,7 +921,7 @@ onBeforeUnmount(() => {
   border-color: #c7cbf5;
   background: #fafbff;
 }
-.question-row.target {
+.question-row.active {
   border-color: #8b84f2;
   background: #f5f5ff;
   box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.1);
@@ -862,5 +999,44 @@ onBeforeUnmount(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.answer-card {
+  padding: 12px;
+  border-color: #f3e0b8;
+  background: #fffbf2;
+  margin-bottom: 14px;
+}
+.answer-region-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 7px;
+  font-size: 11.5px;
+  color: var(--text-2);
+  background: #fff;
+  border: 1px solid #f0e3cc;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.answer-region-row:hover {
+  border-color: #e9c98d;
+}
+.answer-region-row.active {
+  border-color: #f59e0b;
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.16);
+}
+.answer-index {
+  font-weight: 650;
+  color: #b45309;
+  white-space: nowrap;
+}
+.answer-meta {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-3);
 }
 </style>

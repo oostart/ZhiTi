@@ -8,9 +8,10 @@ import CutView from './views/CutView.vue'
 import BankView from './views/BankView.vue'
 import ExportView from './views/ExportView.vue'
 import SettingsView from './views/SettingsView.vue'
-import { initStore, state, ui, type ViewKey } from './store'
+import { initStore, PENDING_ANSWER_FLAG, state, ui, type ViewKey } from './store'
 import { changeDataDir, getStorageState } from './utils/storage'
 import { toast } from './composables/toast'
+import { subjectName } from './utils/label'
 import logoUrl from './assets/logo.png'
 
 const desktop = isTauri()
@@ -40,7 +41,7 @@ const topbar = computed<{ title: string; subtitle: string }>(() => {
       return {
         title: activePaper.value?.title || '题目切割',
         subtitle: activePaper.value
-          ? `${activePaper.value.subject} · ${activePaper.value.grade} · 共 ${activePaper.value.page_count} 页 · 已切割 ${state.questions.filter((q) => q.paper_id === activePaper.value!.id).length} 题`
+          ? `${subjectName(activePaper.value.subject)} · ${activePaper.value.grade} · 共 ${activePaper.value.page_count} 页 · 已切割 ${state.questions.filter((q) => q.paper_id === activePaper.value!.id).length} 题`
           : '请先导入一份 PDF 试卷'
       }
     case 'bank':
@@ -77,6 +78,10 @@ onMounted(async () => {
     }
     await initStore()
     if (!ui.activePaperId) ui.activePaperId = state.papers[0]?.id ?? null
+    if (sessionStorage.getItem(PENDING_ANSWER_FLAG) && !ui.pendingAnswers.length) {
+      sessionStorage.removeItem(PENDING_ANSWER_FLAG)
+      toast('答案区域信息已丢失（页面刷新或数据重置），请回到「题目切割」重新框选', 'warning', 6000)
+    }
   } catch (error) {
     bootError.value = (error as Error).message || '数据库初始化失败'
     toast('本地数据库初始化失败：' + bootError.value, 'error')

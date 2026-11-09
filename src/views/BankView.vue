@@ -21,13 +21,30 @@ import {
 import AppModal from '../components/AppModal.vue'
 import ContentEditor from '../components/ContentEditor.vue'
 import QuestionPaperView from '../components/QuestionPaperView.vue'
-import { addKnowledgePoint, deleteQuestion, paperOf, state, ui, updateQuestion } from '../store'
+import {
+  addKnowledgePoint,
+  deleteQuestion,
+  paperOf,
+  removePendingAnswer,
+  state,
+  ui,
+  updateQuestion,
+  type PendingAnswer
+} from '../store'
 import { toast } from '../composables/toast'
-import { analyzeQuestion, generateAnswer, recommendKnowledge } from '../utils/ai'
-import { docToPlainText, recognizeQuestionLayout, summarizeContent } from '../utils/layout'
-import { buildLayoutImage } from '../utils/layoutImage'
+import { analyzeQuestion, recommendKnowledge } from '../utils/ai'
+import {
+  docToPlainText,
+  hasContentDoc,
+  recognizeAnswerLayout,
+  recognizeQuestionLayout,
+  summarizeContent
+} from '../utils/layout'
+import { buildLayoutImage, buildRegionsImage } from '../utils/layoutImage'
 import { mergeContinuationLines } from '../utils/reflow'
-import { DIFFICULTY_LABELS, QUESTION_TYPES, TYPE_BADGE_CLASS, GRADES, type ContentDoc, type Question } from '../types'
+import { answerTag, questionTag } from '../utils/label'
+import { compressImage } from '../utils/image'
+import { DIFFICULTY_LABELS, QUESTION_TYPES, TYPE_BADGE_CLASS, GRADES, type AnswerBlock, type ContentDoc, type Question } from '../types'
 
 const keyword = ref(ui.bankKeyword || '')
 const filterSubject = ref('')
@@ -44,7 +61,13 @@ const pageSize = 24
 const draft = ref<Question | null>(null)
 const dirty = ref(false)
 const saving = ref(false)
-const aiBusy = ref<'' | 'answer' | 'knowledge' | 'analysis'>('')
+const aiBusy = ref<'' | 'knowledge' | 'analysis'>('')
+const answerRecognizing = ref(false)
+const answerPickTargetId = ref<number | null>(null)
+const answerPickBusy = ref(false)
+const answerPickStep = ref('')
+const answerPickError = ref('')
+const answerOverwriteTarget = ref<Question | null>(null)
 const pendingDelete = ref<Question | null>(null)
 const imagePreview = ref('')
 const layoutBusy = ref(false)
@@ -59,9 +82,30 @@ const editorContent = computed<ContentDoc>(() => draft.value?.content ?? { type:
 const paperImage = computed(() => draft.value?.image ?? '')
 const paperTitle = computed(() => {
   if (!draft.value) return '题目文档'
-  const index = state.questions.findIndex((q) => q.id === draft.value!.id) + 1
-  return index > 0 ? `第 ${index} 题 · 题目文档` : '题目文档'
+  return `${questionLabelOf(draft.value)} · 题目文档`
 })
+const activePending = computed(() => ui.pendingAnswers.find((item) => item.id === ui.activePendingAnswerId) ?? null)
+/** 当前答案框在其来源试卷内的序号（从 1 开始） */
+const activePendingIndex = computed(() => {
+  const pending = activePending.value
+  if (!pending) return 0
+  return ui.pendingAnswers.filter((item) => item.paperId === pending.paperId).findIndex((item) => item.id === pending.id) + 1
+})
+const answerPickPaper = computed(() => {
+  const pending = activePending.value
+  return pending ? state.papers.find((p) => p.id === pending.paperId) ?? null : null
+})
+const activePendingLabel = computed(() => answerTag(answerPickPaper.value?.subject, activePendingIndex.value))
+const answerPickTarget = computed(() => state.questions.find((q) => q.id === answerPickTargetId.value) ?? null)
+const answerPickSummary = computed(() => {
+  const question = answerPickTarget.value
+  if (!question) return ''
+  const line = (question.text || '').split('\n').map((item) => item.trim()).find(Boolean) || '（无题干文字）'
+  return `${questionLabelOf(question)} · ${paperOf(question)?.title || '未关联试卷'} · ${line}`
+})
+const answerOverwriteLabel = computed(() =>
+  answerOverwriteTarget.value ? questionLabelOf(answerOverwriteTarget.value) : ''
+)
 
 watch(draft, () => {
   if (!suppressDirty) dirty.value = true
@@ -71,6 +115,14 @@ watch(keyword, (value) => {
   ui.bankKeyword = value
   pageIndex.value = 1
 })
+
+watch(
+  () => [ui.pendingAnswers.length, ui.activePendingAnswerId] as const,
+  () => {
+    answerPickTargetId.value = null
+    validatePendingAnswer()
+  }
+)
 
 const years = computed(() => Array.from(new Set(state.papers.map((p) => p.year))).sort((a, b) => b - a))
 const subjectOptions = computed(() =>
@@ -146,6 +198,16 @@ function snippet(text: string): string {
   return clean.length > 110 ? `${clean.slice(0, 110)}…` : clean
 }
 
+/** 题目在其所属试卷内的序号（从 1 开始） */
+function questionIndexInPaper(question: Question): number {
+  return state.questions.filter((q) => q.paper_id === question.paper_id).findIndex((q) => q.id === question.id) + 1
+}
+
+/** 题目编号：学科 + 该试卷内序号，如「物理3」 */
+function questionLabelOf(question: Question): string {
+  return questionTag(paperOf(question)?.subject, questionIndexInPaper(question))
+}
+
 function resetFilters() {
   keyword.value = ''
   filterSubject.value = ''
@@ -195,7 +257,8 @@ async function openQuestion(question: Question) {
     ...question,
     knowledge: [...question.knowledge],
     regions: [...question.regions],
-    content: question.content ? (JSON.parse(JSON.stringify(question.content)) as ContentDoc) : undefined
+    content: question.content ? (JSON.parse(JSON.stringify(question.content)) as ContentDoc) : undefined,
+    answerBlocks: question.answerBlocks ? (JSON.parse(JSON.stringify(question.answerBlocks)) as AnswerBlock[]) : undefined
   }
   paperOpen.value = false
   await nextTick()
@@ -212,6 +275,8 @@ async function saveDraft(silent = false) {
       text: current.content ? docToPlainText(current.content) : current.text,
       content: current.content,
       answer: current.answer,
+      answerImage: current.answerImage,
+      answerBlocks: current.answerBlocks,
       difficulty: current.difficulty,
       question_type: current.question_type,
       knowledge: [...current.knowledge],
@@ -229,7 +294,7 @@ async function saveDraft(silent = false) {
   }
 }
 
-async function runAi(kind: 'answer' | 'knowledge' | 'analysis') {
+async function runAi(kind: 'knowledge' | 'analysis') {
   if (!draft.value) return
   const text = (draft.value.content ? docToPlainText(draft.value.content) : draft.value.text).trim()
   if (!text) {
@@ -239,17 +304,7 @@ async function runAi(kind: 'answer' | 'knowledge' | 'analysis') {
   aiBusy.value = kind
   try {
     const config = state.settings.ai
-    if (kind === 'answer') {
-      const result = await generateAnswer(state.settings.ai, {
-        text,
-        subject: activePaper.value?.subject ?? '',
-        grade: activePaper.value?.grade ?? '',
-        type: draft.value.question_type
-      })
-      draft.value.answer = result
-      dirty.value = true
-      toast('AI 已生成参考答案，请核对后保存', 'success')
-    } else if (kind === 'knowledge') {
+    if (kind === 'knowledge') {
       const result = await recommendKnowledge(
         config,
         { text, subject: activePaper.value?.subject ?? '', grade: activePaper.value?.grade ?? '' },
@@ -282,6 +337,162 @@ async function runAi(kind: 'answer' | 'knowledge' | 'analysis') {
   }
 }
 
+/** 题目文档「AI 识别答案」与切割页「添加答案」共用的识别流程，保证两条入口结果一致 */
+async function recognizeAnswer(imageDataUrl: string) {
+  return await recognizeAnswerLayout(state.settings.ai, imageDataUrl)
+}
+
+async function recognizeAnswerFromImage(imageDataUrl: string) {
+  if (!draft.value) return
+  answerRecognizing.value = true
+  try {
+    const result = await recognizeAnswer(imageDataUrl)
+    const replaced = !!draft.value.answer.trim() || !!draft.value.answerBlocks?.length
+    draft.value.answer = result.text
+    draft.value.answerBlocks = result.blocks
+    dirty.value = true
+    const figures = result.figureCount ? `，含 ${result.figureCount} 张插图` : ''
+    const head = replaced ? '已用识别结果替换原答案' : '已识别并填入参考答案'
+    if (result.warnings.length) {
+      toast(`${head}${figures}。需人工确认：${result.warnings.slice(0, 2).join('；')}`, 'warning', 6200)
+    } else {
+      toast(`${head}${figures}，请核对后保存`, 'success', 4200)
+    }
+  } catch (error) {
+    toast('答案识别失败：' + ((error as Error).message || '未知错误'), 'error', 5200)
+  } finally {
+    answerRecognizing.value = false
+  }
+}
+
+function exitAnswerPick() {
+  answerPickTargetId.value = null
+  answerPickStep.value = ''
+  answerPickError.value = ''
+  answerOverwriteTarget.value = null
+}
+
+/** 待处理答案区域失效时移除该框并给出提示 */
+function validatePendingAnswer() {
+  const pending = activePending.value
+  if (!pending) {
+    answerPickTargetId.value = null
+    return
+  }
+  if (!state.papers.some((paper) => paper.id === pending.paperId)) {
+    removePendingAnswer(pending.id)
+    exitAnswerPick()
+    toast('答案区域信息已失效（原试卷可能已被删除），请回到「题目切割」重新框选', 'warning', 5600)
+    return
+  }
+  const region = pending.region
+  if (!region || !(region.w > 0) || !(region.h > 0)) {
+    removePendingAnswer(pending.id)
+    exitAnswerPick()
+    toast('答案区域信息不完整，请回到「题目切割」重新框选', 'warning', 5600)
+  }
+}
+
+function onQuestionCardClick(question: Question) {
+  if (!activePending.value) {
+    void openQuestion(question)
+    return
+  }
+  answerPickTargetId.value = question.id
+  answerPickError.value = ''
+}
+
+function startAnswerFill() {
+  if (answerPickBusy.value) return
+  const target = answerPickTarget.value
+  const pending = activePending.value
+  if (!target || !pending) {
+    toast('请先在题库中点击一道题目作为目标', 'warning')
+    return
+  }
+  answerPickError.value = ''
+  if (!state.settings.ai.apiKey.trim()) {
+    toast('请先在「设置」中填写 AI 接口与密钥', 'warning')
+    return
+  }
+  if (target.answer.trim()) {
+    answerOverwriteTarget.value = target
+    return
+  }
+  void runAnswerFill(target, pending)
+}
+
+function confirmAnswerOverwrite() {
+  const target = answerOverwriteTarget.value
+  const pending = activePending.value
+  answerOverwriteTarget.value = null
+  if (target && pending) void runAnswerFill(target, pending)
+}
+
+async function runAnswerFill(target: Question, pending: PendingAnswer) {
+  answerPickBusy.value = true
+  answerPickError.value = ''
+  answerPickStep.value = '正在读取答案区域原图…'
+  let step = '答案图读取'
+  try {
+    const rawImage = await buildRegionsImage(pending.paperId, [pending.region])
+    if (!rawImage) throw new Error('无法读取答案区域原图，原试卷可能已被删除，请回到「题目切割」重新框选')
+    const answerImage = await compressImage(rawImage).catch(() => rawImage)
+    let question = state.questions.find((q) => q.id === target.id) ?? target
+    const hadContent = hasContentDoc(question.content)
+    if (!hadContent) {
+      step = '原图识别'
+      answerPickStep.value = '步骤 1/2 · 正在识别原图生成题目文档…'
+      const layoutImage = await buildLayoutImage(question)
+      const layout = await recognizeQuestionLayout(state.settings.ai, layoutImage)
+      await updateQuestion(question.id, { content: layout.content, text: layout.text })
+      question = state.questions.find((q) => q.id === target.id) ?? question
+    }
+    step = '答案识别'
+    answerPickStep.value = hadContent ? '步骤 1/1 · 正在识别答案…' : '步骤 2/2 · 正在识别答案…'
+    const recognized = await recognizeAnswer(answerImage)
+    step = '答案写入'
+    answerPickStep.value = '正在写入参考答案…'
+    await updateQuestion(question.id, { answer: recognized.text, answerBlocks: recognized.blocks, answerImage })
+    const targetLabel = questionLabelOf(question)
+    const pendingSubject = state.papers.find((p) => p.id === pending.paperId)?.subject
+    const pendingNo =
+      ui.pendingAnswers.filter((item) => item.paperId === pending.paperId).findIndex((item) => item.id === pending.id) + 1
+    const pendingLabel = answerTag(pendingSubject, pendingNo)
+    removePendingAnswer(pending.id)
+    exitAnswerPick()
+    const remains = ui.pendingAnswers.length
+    const figures = recognized.figureCount ? `（含 ${recognized.figureCount} 张插图）` : ''
+    toast(
+      remains
+        ? `已写入「${targetLabel}」的参考答案${figures}并移除「${pendingLabel}」，还有 ${remains} 个答案框待处理`
+        : `已写入「${targetLabel}」的参考答案${figures}，请核对`,
+      'success',
+      4200
+    )
+  } catch (error) {
+    answerPickError.value = `${step}失败：${(error as Error).message || '未知错误'}`
+    toast(answerPickError.value, 'error', 5600)
+  } finally {
+    answerPickBusy.value = false
+    answerPickStep.value = ''
+  }
+}
+
+function cancelAnswerPick() {
+  if (answerPickBusy.value) return
+  const pending = activePending.value
+  if (!pending) {
+    exitAnswerPick()
+    return
+  }
+  const label = activePendingLabel.value
+  removePendingAnswer(pending.id)
+  exitAnswerPick()
+  const remains = ui.pendingAnswers.length
+  toast(remains ? `已取消「${label}」，还有 ${remains} 个答案框待处理` : `已取消「${label}」`, 'info', 2800)
+}
+
 function updateContent(doc: ContentDoc) {
   if (!draft.value) return
   draft.value.content = doc
@@ -292,7 +503,29 @@ function updateContent(doc: ContentDoc) {
 function updateAnswer(value: string) {
   if (!draft.value) return
   draft.value.answer = value
+  // 手动编辑按纯文本保存：文字在前，原有图片块保留为附图，避免悄悄丢图
+  const figures = (draft.value.answerBlocks ?? []).filter((block): block is AnswerBlock & { type: 'image' } => block.type === 'image')
+  draft.value.answerBlocks = figures.length ? [{ type: 'text', text: value }, ...figures] : undefined
   dirty.value = true
+}
+
+function updateAnswerImage(value: string) {
+  if (!draft.value) return
+  const next = value || undefined
+  const hadBlocks = !!draft.value.answerBlocks?.length
+  // 答案块里的裁剪坐标依赖原图，换图/删图后必须失效，避免按旧坐标截出错图
+  if (next !== draft.value.answerImage) draft.value.answerBlocks = undefined
+  draft.value.answerImage = next
+  dirty.value = true
+  if (hadBlocks) {
+    toast(
+      next === undefined
+        ? '已移除答案原图，原有答案块（含插图）已清除'
+        : '已更换答案原图，原有答案块（含插图定位）已清除，可重新识别',
+      'warning',
+      4600
+    )
+  }
 }
 
 function updateAnalysis(value: string) {
@@ -403,6 +636,7 @@ function onKeydown(event: KeyboardEvent) {
 
 onMounted(async () => {
   window.addEventListener('keydown', onKeydown)
+  validatePendingAnswer()
   const pendingId = ui.pendingPaperId
   if (pendingId == null) return
   ui.pendingPaperId = null
@@ -419,7 +653,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="view">
+  <div class="view" :class="{ 'answer-picking': !!activePending }">
     <div class="bank-main">
       <div class="filter-bar">
         <div class="filter-row">
@@ -511,15 +745,19 @@ onBeforeUnmount(() => {
             v-for="question in paged"
             :key="question.id"
             class="q-card"
-            :class="{ selected: ui.exportIds.includes(question.id), editing: ui.activeQuestionId === question.id }"
-            @click="openQuestion(question)"
+            :class="{
+              selected: ui.exportIds.includes(question.id),
+              editing: !activePending && ui.activeQuestionId === question.id,
+              'answer-target': !!activePending && answerPickTargetId === question.id
+            }"
+            @click="onQuestionCardClick(question)"
           >
             <div class="q-thumb">
               <img v-if="question.image" :src="question.image" loading="lazy" />
               <div class="q-check" @click.stop="toggleSelect(question.id)">
                 <Check v-if="ui.exportIds.includes(question.id)" :size="13" />
               </div>
-              <div class="q-thumb-index">#{{ state.questions.findIndex((q) => q.id === question.id) + 1 }}</div>
+              <div class="q-thumb-index">{{ questionLabelOf(question) }}</div>
             </div>
             <div class="q-body">
               <div class="q-text" v-html="question.text ? highlight(snippet(question.text)) : '<span style=\'color:#a2a9b8\'>（暂无题干文字，可生成题目文档）</span>'"></div>
@@ -530,6 +768,14 @@ onBeforeUnmount(() => {
                 </span>
                 <span v-if="question.knowledge.length" class="chip" style="height: 20px; font-size: 11px; max-width: 116px; overflow: hidden; text-overflow: ellipsis">
                   <Tag :size="10" /> {{ question.knowledge[0] }}{{ question.knowledge.length > 1 ? ` +${question.knowledge.length - 1}` : '' }}
+                </span>
+                <span v-if="question.answer.trim()" class="badge badge-amber">已有答案</span>
+                <span
+                  v-if="!(paperOf(question)?.subject ?? '').trim()"
+                  class="badge badge-gray"
+                  title="该题所属试卷未填写学科，可到「试卷导入」编辑试卷补填"
+                >
+                  未设学科
                 </span>
               </div>
               <div class="q-source">{{ paperOf(question)?.title || '未关联试卷' }}</div>
@@ -556,7 +802,7 @@ onBeforeUnmount(() => {
         <div class="editor-head">
           <div style="min-width: 0">
             <div style="font-size: 13px; font-weight: 650; display: flex; align-items: center; gap: 6px">
-              第 {{ draft ? state.questions.findIndex((q) => q.id === draft?.id) + 1 : '' }} 题
+              {{ draft ? questionLabelOf(draft) : '' }}
               <span v-if="dirty" class="badge badge-amber">未保存</span>
             </div>
             <div class="hint" style="margin-top: 3px">{{ activePaper?.title || '未关联试卷' }}</div>
@@ -574,14 +820,10 @@ onBeforeUnmount(() => {
           <div v-else class="editor-image-placeholder">暂无题目原图</div>
 
           <div v-if="!draft.content" class="content-empty">
-            <div class="content-empty-title">还没有结构化内容</div>
-            <div class="hint">把题目识别成「文字 + 公式 + 图形块」，识别后可逐题对照校对。</div>
             <button class="btn btn-primary btn-sm" :disabled="layoutBusy" @click="requestLayout">
               <Loader2 v-if="layoutBusy" :size="12" class="spin" />
-              <Sparkles v-else :size="12" /> 识别并结构化
+              <Sparkles v-else :size="12" /> AI识别
             </button>
-            <div v-if="layoutBusy" class="hint">{{ layoutStatus }}</div>
-            <div v-else class="hint">需要先在「设置」中填写支持图片输入的视觉模型。</div>
           </div>
 
           <template v-else>
@@ -632,6 +874,48 @@ onBeforeUnmount(() => {
       </template>
     </AppModal>
 
+    <div v-if="activePending" class="answer-pick-bar">
+      <div class="answer-pick-main">
+        <div class="answer-pick-mode">
+          <Sparkles :size="13" />
+          正在为 <span class="answer-pick-tag">{{ activePendingLabel }}</span> 选择题目
+          <span class="answer-pick-source">
+            第 {{ activePending.region.page }} 页 · 「{{ answerPickPaper?.title || '已删除的试卷' }}」
+          </span>
+          <span v-if="ui.pendingAnswers.length > 1" class="answer-pick-count">共 {{ ui.pendingAnswers.length }} 个答案框待处理</span>
+        </div>
+        <div v-if="answerPickBusy" class="answer-pick-progress">
+          <Loader2 :size="13" class="spin" />
+          <span>{{ answerPickStep || '正在处理…' }}</span>
+        </div>
+        <div v-else-if="answerPickError" class="answer-pick-error">{{ answerPickError }}</div>
+        <div v-else class="answer-pick-target">
+          {{ answerPickSummary || '点击下方任意题目卡片，选中要填入答案的题目' }}
+        </div>
+      </div>
+      <div class="answer-pick-actions">
+        <button class="btn btn-ghost btn-sm" :disabled="answerPickBusy" @click="cancelAnswerPick">取消</button>
+        <button class="btn btn-primary btn-sm" :disabled="!answerPickTargetId || answerPickBusy" @click="startAnswerFill">
+          <Loader2 v-if="answerPickBusy" :size="13" class="spin" />
+          <Sparkles v-else :size="13" />
+          识别并填入
+        </button>
+      </div>
+    </div>
+
+    <AppModal v-if="answerOverwriteTarget" title="覆盖已有答案？" @close="answerOverwriteTarget = null">
+      <template #description>
+        「{{ answerOverwriteLabel }}」已有参考答案，识别结果将覆盖原答案。
+      </template>
+      <div class="hint">{{ snippet(answerOverwriteTarget.text || '（无题干文字）') }}</div>
+      <template #actions>
+        <button class="btn" @click="answerOverwriteTarget = null">取消</button>
+        <button class="btn btn-primary" @click="confirmAnswerOverwrite">
+          <Sparkles :size="14" /> 覆盖并识别
+        </button>
+      </template>
+    </AppModal>
+
     <QuestionPaperView
       v-if="paperOpen && draft?.content"
       :model-value="editorContent"
@@ -639,17 +923,22 @@ onBeforeUnmount(() => {
       :title="paperTitle"
       :dirty="dirty"
       :answer="draft.answer"
+      :answer-blocks="draft.answerBlocks || []"
+      :answer-image="draft.answerImage || ''"
       :analysis="draft.analysis"
       :knowledge="draft.knowledge"
       :question-type="draft.question_type"
       :difficulty="draft.difficulty"
       :ai-busy="aiBusy"
+      :answer-recognizing="answerRecognizing"
       @update:model-value="updateContent"
       @update:answer="updateAnswer"
+      @update:answer-image="updateAnswerImage"
       @update:analysis="updateAnalysis"
       @update:knowledge="updateKnowledge"
       @update:question-type="updateQuestionType"
       @update:difficulty="updateDifficulty"
+      @recognize-answer="recognizeAnswerFromImage"
       @ai="runAi"
       @save="saveDraft()"
       @relayout="relayoutFromPaper"
@@ -761,10 +1050,104 @@ onBeforeUnmount(() => {
   border-color: #6366f1;
   box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.18);
 }
+.q-card.answer-target {
+  border-color: #6366f1;
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.22);
+}
+.view.answer-picking .bank-content {
+  padding-bottom: 118px;
+}
+.answer-pick-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: min(920px, calc(100vw - 48px));
+  padding: 10px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(20, 28, 48, 0.18);
+  transform: translateX(-50%);
+}
+.answer-pick-main {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+.answer-pick-mode {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--accent-dark);
+}
+.answer-pick-source {
+  margin-left: 4px;
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.answer-pick-tag {
+  flex-shrink: 0;
+  padding: 0 6px;
+  font-size: 11.5px;
+  line-height: 18px;
+  color: #b45309;
+  background: #fef3c7;
+  border: 1px solid #f3d9a4;
+  border-radius: 999px;
+}
+.answer-pick-count {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.answer-pick-target {
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.answer-pick-progress {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--accent);
+}
+.answer-pick-error {
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--danger);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.answer-pick-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+}
 .q-thumb-index {
   position: absolute;
   left: 7px;
   top: 7px;
+  max-width: calc(100% - 14px);
+  overflow: hidden;
   background: rgba(255, 255, 255, 0.92);
   border: 1px solid var(--border);
   color: var(--text-2);
@@ -772,6 +1155,8 @@ onBeforeUnmount(() => {
   padding: 1px 6px;
   border-radius: 999px;
   font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .q-source {
   font-size: 11px;
@@ -811,16 +1196,18 @@ onBeforeUnmount(() => {
   justify-content: center;
 }
 .editor-image img {
-  width: 100%;
+  max-width: 100%;
+  max-height: 220px;
+  width: auto;
+  height: auto;
   object-fit: contain;
   object-position: top;
-  max-height: 220px;
 }
 .editor-image-placeholder {
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 96px;
+  height: 40px;
   margin-bottom: 14px;
   border: 1px dashed var(--border);
   border-radius: 9px;
@@ -840,10 +1227,6 @@ onBeforeUnmount(() => {
   border: 1px dashed var(--border-strong);
   border-radius: 9px;
   background: #fafbfe;
-}
-.content-empty-title {
-  font-size: 13px;
-  font-weight: 600;
 }
 .content-toolbar {
   display: flex;

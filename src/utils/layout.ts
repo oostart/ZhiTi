@@ -1,6 +1,6 @@
 import katex from 'katex'
 import 'katex/contrib/mhchem'
-import type { AiSettings, ContentDoc, ContentNode } from '../types'
+import type { AiSettings, AnswerBlock, ContentDoc, ContentNode } from '../types'
 import { chat, type ChatMessage } from './ai'
 import { loadImage } from './image'
 
@@ -82,6 +82,110 @@ export async function recognizeQuestionLayout(config: AiSettings, imageDataUrl: 
     figureCount: built.figureCount,
     unresolved: built.unresolved
   }
+}
+
+export interface AnswerLayoutResult {
+  blocks: AnswerBlock[]
+  text: string
+  figureCount: number
+  warnings: string[]
+}
+
+const ANSWER_SYSTEM_PROMPT = [
+  '你是一名试卷参考答案排版转录员。唯一任务是把图片中的答案逐行原样转录成结构化 JSON。',
+  '禁止解答、改写、纠错、补充或推断图片中没有的内容。',
+  '只输出 JSON，不要输出 markdown 代码块、解释或任何前后缀。'
+].join('\n')
+
+const ANSWER_USER_PROMPT = [
+  '这是一张从试卷中裁剪出的参考答案图片。请严格按视觉行转录，输出：',
+  '{"blocks":[',
+  '  {"type":"line","runs":[{"type":"text","text":"解：对小球受力分析，如图所示。"}],"align":"left"},',
+  '  {"type":"image","bbox":[0.18,0.42,0.42,0.24],"width":0.42,"align":"center"},',
+  '  {"type":"line","runs":[{"type":"text","text":"由牛顿第二定律得 "},{"type":"math","latex":"F-mg=ma"}],"align":"left"}',
+  ']}',
+  '规则：',
+  '1. 只转录答案本身，不要输出「答案：」「解析：」等标签，也不要解释。',
+  '2. 每一行一个 line，按从上到下的顺序，保留题号、小问标号与原文标点；不要把两行合并成一行。',
+  '3. 段落内的公式放在 runs 里，类型为 math；独立成行的公式用 type=math。',
+  '4. 图形、受力图、坐标图、表格一律用 type=image：bbox 是相对整张裁剪图的归一化坐标 [x,y,w,h]，width 是图形相对裁剪图宽度（0~1），不要用文字描述图形。',
+  '5. LaTeX 不要带 $、\\( \\)、\\[ \\] 定界符；化学方程式用 \\ce{}。',
+  '6. 看不清的字符写成 □，不要猜测。'
+].join('\n')
+
+/** 识别参考答案：文字行 + 图片块（图片只保留坐标，渲染时从原图裁剪） */
+export async function recognizeAnswerLayout(config: AiSettings, imageDataUrl: string): Promise<AnswerLayoutResult> {
+  const messages: ChatMessage[] = [
+    { role: 'system', content: ANSWER_SYSTEM_PROMPT },
+    {
+      role: 'user',
+      content: [
+        { type: 'text', text: ANSWER_USER_PROMPT },
+        { type: 'image_url', image_url: { url: imageDataUrl } }
+      ]
+    }
+  ]
+  const raw = await chat(config, messages, {
+    model: (config.visionModel || '').trim() || config.model,
+    temperature: 0,
+    maxTokens: 4096,
+    timeoutMs: 90000
+  })
+  const layoutBlocks = parseLayoutBlocks(raw)
+  if (!layoutBlocks.length) throw new Error('模型未返回可用的答案内容')
+  const built = toAnswerBlocks(layoutBlocks)
+  if (!built.blocks.length) throw new Error('未识别到答案内容，请换一张更清晰的图片重试')
+  return {
+    blocks: built.blocks,
+    text: answerBlocksToText(built.blocks),
+    figureCount: built.figureCount,
+    warnings: built.warnings
+  }
+}
+
+function toAnswerBlocks(blocks: LayoutBlock[]): { blocks: AnswerBlock[]; figureCount: number; warnings: string[] } {
+  const out: AnswerBlock[] = []
+  const warnings: string[] = []
+  let figureCount = 0
+  for (const block of blocks) {
+    if (block.type === 'image') {
+      if (!block.bbox || block.bbox[2] <= 0 || block.bbox[3] <= 0) {
+        warnings.push('有 1 张插图未给出有效位置，已跳过')
+        continue
+      }
+      out.push({ type: 'image', bbox: block.bbox, width: block.width, align: block.align })
+      figureCount += 1
+      continue
+    }
+    const text =
+      block.type === 'math'
+        ? `$$${block.latex}$$`
+        : block.runs
+            .map((run) =>
+              run.type === 'text' ? run.text : run.display ? `$$${run.latex}$$` : `$${run.latex}$`
+            )
+            .join('')
+    const cleaned = (out.length === 0 ? stripAnswerLabel(text) : text.replace(/\r/g, '')).trim()
+    if (cleaned) out.push({ type: 'text', text: cleaned })
+  }
+  return { blocks: out, figureCount, warnings }
+}
+
+/** 去掉模型仍可能带上的「答案：」「解析：」前缀 */
+function stripAnswerLabel(text: string): string {
+  return text
+    .replace(/\r/g, '')
+    .replace(/^(?:[【[]?\s*(?:参考答案|答案|解答|解析|答)\s*[】\]]?\s*[：:]\s*)+/, '')
+    .trim()
+}
+
+/** 由块结构派生纯文本（用于导出、搜索与旧数据兜底），图片以 [图片] 占位 */
+export function answerBlocksToText(blocks: AnswerBlock[]): string {
+  return blocks
+    .map((block) => (block.type === 'text' ? block.text : '[图片]'))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
 }
 
 function extractJson(raw: string): unknown {

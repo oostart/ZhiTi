@@ -23,6 +23,20 @@ export function canvasToDataUrl(canvas: HTMLCanvasElement, quality = 0.92): stri
   return canvas.toDataURL('image/jpeg', quality)
 }
 
+/** 压缩答案图片：只缩小不放大，限制最大宽度并转 JPEG，避免题库体积膨胀 */
+export async function compressImage(dataUrl: string, maxWidth = 1600, quality = 0.86): Promise<string> {
+  const img = await loadImage(dataUrl)
+  const scale = Math.min(1, maxWidth / img.naturalWidth)
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.max(1, Math.round(img.naturalWidth * scale))
+  canvas.height = Math.max(1, Math.round(img.naturalHeight * scale))
+  const ctx = canvas.getContext('2d')!
+  ctx.fillStyle = '#ffffff'
+  ctx.fillRect(0, 0, canvas.width, canvas.height)
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+  return canvasToDataUrl(canvas, quality)
+}
+
 /** 从整页 canvas 中裁剪归一化区域 */
 export function cropCanvas(source: HTMLCanvasElement, region: { x: number; y: number; w: number; h: number }): HTMLCanvasElement {
   const sx = Math.max(0, Math.round(region.x * source.width))
