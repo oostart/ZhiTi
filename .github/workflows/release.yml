@@ -63,7 +63,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Windows x64：产出 NSIS 安装包（zhiti_<version>_x64-setup.exe）
+          # Windows x64：产出 NSIS 安装包（zhiti2.0_<version>_x64-setup.exe）
           - name: Windows x64 (NSIS)
             platform: windows-latest
             target: x86_64-pc-windows-msvc
@@ -120,16 +120,16 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ needs.check-version.outputs.tag }}
-          releaseName: 'zhiti v__VERSION__'
+          releaseName: 'zhiti2.0 v__VERSION__'
           releaseBody: |
             自动构建产物（未签名）：
 
-            - Windows: `zhiti_<version>_x64-setup.exe`
-            - macOS (Intel): `zhiti_<version>_x64.dmg`
-            - macOS (Apple Silicon): `zhiti_<version>_aarch64.dmg`
+            - Windows: `zhiti2.0_<version>_x64-setup.exe`
+            - macOS (Intel): `zhiti2.0_<version>_x64.dmg`
+            - macOS (Apple Silicon): `zhiti2.0_<version>_aarch64.dmg`
 
             macOS 首次打开若被 Gatekeeper 拦截，请右键 → 打开，或执行：
-            xattr -dr com.apple.quarantine /Applications/zhiti.app
+            xattr -dr com.apple.quarantine /Applications/zhiti2.0.app
           releaseDraft: true
           prerelease: false
           args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
