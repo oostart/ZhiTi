@@ -69,14 +69,15 @@ jobs:
             target: x86_64-pc-windows-msvc
             bundles: nsis
           # macOS Intel：产出 dmg / app
-          # 注意：macos-13 已逐步退役；若该 runner 不可用，把 platform 换成 macos-15-intel 即可
+          # macos-13 已被 GitHub 退役，Intel 机器改用 macos-15-intel 标签
           - name: macOS Intel (x64)
-            platform: macos-13
+            platform: macos-15-intel
             target: x86_64-apple-darwin
             bundles: app,dmg
           # macOS Apple Silicon：产出 dmg / app
+          # macos-14 已于 2026-10 退役，arm64 改用 macos-15 标签
           - name: macOS Apple Silicon (arm64)
-            platform: macos-14
+            platform: macos-15
             target: aarch64-apple-darwin
             bundles: app,dmg
 
