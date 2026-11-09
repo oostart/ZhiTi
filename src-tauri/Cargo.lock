@@ -4373,7 +4373,7 @@ dependencies = [
 
 [[package]]
 name = "zhiti"
-version = "1.0.1"
+version = "2.0.0"
 dependencies = [
  "base64 0.22.1",
  "serde",

@@ -1,0 +1,135 @@
+name: Release
+
+# 触发方式：
+#  1) 推送 v* 形式的标签（推荐），例如：git tag v2.0.0 && git push origin v2.0.0
+#  2) 手动触发（Actions 页面 Run workflow），此时使用配置文件里的版本号生成 vX.Y.Z 标签
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+# 全程使用仓库内置的 GITHUB_TOKEN，不需要用户额外提供个人 token。
+# 前提：仓库 Settings → Actions → General → Workflow permissions 设为 "Read and write permissions"
+permissions:
+  contents: write
+
+jobs:
+  # 先校验标签版本与配置文件版本一致，避免发布出对不上的版本
+  check-version:
+    name: Check version consistency
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate version
+        id: version
+        run: |
+          set -euo pipefail
+          cfg_version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          pkg_version=$(node -p "require('./package.json').version")
+          cargo_version=$(grep -m1 '^version' src-tauri/Cargo.toml | sed -E 's/.*"(.*)".*/\1/')
+
+          echo "tauri.conf.json = $cfg_version"
+          echo "package.json    = $pkg_version"
+          echo "Cargo.toml      = $cargo_version"
+
+          if [ "$cfg_version" != "$pkg_version" ] || [ "$cfg_version" != "$cargo_version" ]; then
+            echo "::error::三处版本号不一致：tauri.conf.json=$cfg_version, package.json=$pkg_version, Cargo.toml=$cargo_version，请先统一版本号再发布。"
+            exit 1
+          fi
+
+          if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            tag="${GITHUB_REF_NAME}"
+            tag_version="${tag#v}"
+            if [ "$tag_version" != "$cfg_version" ]; then
+              echo "::error::标签版本 ($tag_version) 与配置版本 ($cfg_version) 不一致。请使用 v${cfg_version} 形式的标签，或先把配置版本改为 $tag_version。"
+              exit 1
+            fi
+          else
+            tag="v${cfg_version}"
+          fi
+
+          echo "将发布标签：$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.name }}
+    needs: check-version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Windows x64：产出 NSIS 安装包（zhiti_<version>_x64-setup.exe）
+          - name: Windows x64 (NSIS)
+            platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+          # macOS Intel：产出 dmg / app
+          # 注意：macos-13 已逐步退役；若该 runner 不可用，把 platform 换成 macos-15-intel 即可
+          - name: macOS Intel (x64)
+            platform: macos-13
+            target: x86_64-apple-darwin
+            bundles: app,dmg
+          # macOS Apple Silicon：产出 dmg / app
+          - name: macOS Apple Silicon (arm64)
+            platform: macos-14
+            target: aarch64-apple-darwin
+            bundles: app,dmg
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # 缓存 Rust 依赖与编译产物，缩短后续构建时间
+      - name: Cache Rust
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: ${{ matrix.target }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      # macOS 当前为未签名构建；以后要开启签名/公证，需要在此处补充环境变量（对应仓库 Secrets）：
+      #   APPLE_CERTIFICATE           —— 导出的 .p12 证书（base64）
+      #   APPLE_CERTIFICATE_PASSWORD  —— .p12 证书密码
+      #   APPLE_SIGNING_IDENTITY      —— 签名身份，如 "Developer ID Application: Your Name (TEAMID)"
+      #   APPLE_ID                    —— Apple 开发者账号邮箱（公证用）
+      #   APPLE_PASSWORD              —— App 专用密码（公证用）
+      #   APPLE_TEAM_ID               —— 团队 ID（公证用）
+      # 未配置上述 secret 时保持未签名，产物在 macOS 上首次打开会被 Gatekeeper 拦截。
+      - name: Build and create draft release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ needs.check-version.outputs.tag }}
+          releaseName: 'zhiti v__VERSION__'
+          releaseBody: |
+            自动构建产物（未签名）：
+
+            - Windows: `zhiti_<version>_x64-setup.exe`
+            - macOS (Intel): `zhiti_<version>_x64.dmg`
+            - macOS (Apple Silicon): `zhiti_<version>_aarch64.dmg`
+
+            macOS 首次打开若被 Gatekeeper 拦截，请右键 → 打开，或执行：
+            xattr -dr com.apple.quarantine /Applications/zhiti.app
+          releaseDraft: true
+          prerelease: false
+          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
