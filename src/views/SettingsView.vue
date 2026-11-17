@@ -17,7 +17,7 @@ import AppModal from '../components/AppModal.vue'
 import { reloadStore, saveSettings, state, ui } from '../store'
 import { db } from '../db'
 import { PROVIDER_PRESETS, testConnection } from '../utils/ai'
-import { disposeAllDocuments } from '../utils/pdf'
+import { disposeAllSources } from '../utils/source'
 import { changeDataDir, getStorageState, openDataDir } from '../utils/storage'
 import { toast } from '../composables/toast'
 
@@ -116,7 +116,7 @@ async function applyDirChange() {
 }
 
 async function clearAllData() {
-  await disposeAllDocuments()
+  await disposeAllSources()
   await db.clear('questions')
   await db.clear('papers')
   await db.clear('files')
@@ -244,7 +244,7 @@ onMounted(() => {
             <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px">
               <div>
                 <div style="font-size: 12.5px; font-weight: 600">数据存放目录</div>
-                <div class="hint" style="margin-top: 2px">题库、原始 PDF 与设置都保存在这里</div>
+                <div class="hint" style="margin-top: 2px">题库、原始试卷文件与设置都保存在这里</div>
               </div>
               <div v-if="desktop" style="display: flex; gap: 6px">
                 <button class="btn btn-sm" @click="openStorageDir"><FolderOpen :size="13" /> 打开目录</button>
@@ -285,7 +285,7 @@ onMounted(() => {
     <AppModal v-if="confirmClear" title="清空全部题库数据？" @close="confirmClear = false">
       <template #description>此操作不可撤销，请确认已备份需要的题目和知识点。</template>
       <div class="hint">
-        将删除 {{ state.papers.length }} 份试卷、{{ state.questions.length }} 道题目、{{ state.knowledge.length }} 个知识点及原始 PDF 缓存，AI 设置会保留。
+        将删除 {{ state.papers.length }} 份试卷、{{ state.questions.length }} 道题目、{{ state.knowledge.length }} 个知识点及原始试卷文件缓存，AI 设置会保留。
       </div>
       <template #actions>
         <button class="btn" @click="confirmClear = false">取消</button>

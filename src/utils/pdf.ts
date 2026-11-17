@@ -111,33 +111,39 @@ function insideFragment(frag: TextFragment, region: Region): boolean {
   return cx >= region.x - 0.004 && cx <= region.x + region.w + 0.004 && cy >= region.y - 0.004 && cy <= region.y + region.h + 0.004
 }
 
+/** 把同一页的文字碎片按区域筛选并还原成按行排列的纯文本 */
+export function fragmentsToRegionText(frags: TextFragment[], region: Region): string {
+  const selected = frags.filter((f) => insideFragment(f, region)).sort((a, b) => a.y - b.y || a.x - b.x)
+  if (!selected.length) return ''
+  const lines: { y: number; parts: TextFragment[] }[] = []
+  for (const frag of selected) {
+    const last = lines[lines.length - 1]
+    if (last && Math.abs(frag.y - last.y) < Math.max(frag.h * 0.7, 0.008)) {
+      last.parts.push(frag)
+    } else {
+      lines.push({ y: frag.y, parts: [frag] })
+    }
+  }
+  return lines
+    .map((line) => {
+      const parts = line.parts.sort((a, b) => a.x - b.x)
+      return parts.reduce((acc, part, i) => {
+        if (i === 0) return part.str
+        return acc + (isAsciiWordBoundary(acc, part.str) ? ' ' : '') + part.str
+      }, '')
+    })
+    .join('\n')
+    .trim()
+}
+
 /** 从 PDF 文本层中按区域提取文字（数字版试卷首选） */
 export async function extractTextFromRegions(paperId: number, doc: PDFDocumentProxy, regions: Region[]): Promise<string> {
   const blocks: string[] = []
   const sorted = [...regions].sort((a, b) => a.page - b.page || a.y - b.y)
   for (const region of sorted) {
     const frags = await getTextFragments(paperId, doc, region.page)
-    const selected = frags.filter((f) => insideFragment(f, region)).sort((a, b) => a.y - b.y || a.x - b.x)
-    if (!selected.length) continue
-    const lines: { y: number; parts: TextFragment[] }[] = []
-    for (const frag of selected) {
-      const last = lines[lines.length - 1]
-      if (last && Math.abs(frag.y - last.y) < Math.max(frag.h * 0.7, 0.008)) {
-        last.parts.push(frag)
-      } else {
-        lines.push({ y: frag.y, parts: [frag] })
-      }
-    }
-    const text = lines
-      .map((line) => {
-        const parts = line.parts.sort((a, b) => a.x - b.x)
-        return parts.reduce((acc, part, i) => {
-          if (i === 0) return part.str
-          return acc + (isAsciiWordBoundary(acc, part.str) ? ' ' : '') + part.str
-        }, '')
-      })
-      .join('\n')
-    if (text.trim()) blocks.push(text.trim())
+    const text = fragmentsToRegionText(frags, region)
+    if (text) blocks.push(text)
   }
   return blocks.join('\n\n')
 }

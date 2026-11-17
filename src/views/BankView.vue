@@ -860,7 +860,7 @@ onBeforeUnmount(() => {
         <div v-if="!state.questions.length" class="empty">
           <div class="empty-icon"><Filter :size="24" /></div>
           <div class="empty-title">题库是空的</div>
-          <div class="empty-desc">导入一份 PDF 试卷并完成题目切割后，题目会自动进入这里，可检索、编辑与导出。</div>
+          <div class="empty-desc">导入一份 PDF 或 Word 试卷并完成题目切割后，题目会自动进入这里，可检索、编辑与导出。</div>
           <button class="btn btn-primary" @click="ui.view = 'import'">去导入试卷</button>
         </div>
 

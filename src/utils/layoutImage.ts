@@ -1,19 +1,19 @@
 import type { Question, Region } from '../types'
 import { canvasToDataUrl, composeDataUrls, cropCanvas } from './image'
-import { getPaperDocument, renderPageToCanvas } from './pdf'
+import { getPaperSource } from './source'
 
 /** 按试卷与区域重新高分辨率渲染截图，失败时返回空字符串 */
 export async function buildRegionsImage(paperId: number, regions: Region[]): Promise<string> {
   if (!paperId || !regions.length) return ''
   try {
-    const doc = await getPaperDocument(paperId)
+    const source = await getPaperSource(paperId)
     const ordered = [...regions].sort((a, b) => a.page - b.page || a.y - b.y)
     const pageCanvases = new Map<number, HTMLCanvasElement>()
     const parts: string[] = []
     for (const region of ordered) {
       let canvas = pageCanvases.get(region.page)
       if (!canvas) {
-        canvas = await renderPageToCanvas(doc, region.page, 2400)
+        canvas = await source.renderPage(region.page, 2400)
         pageCanvases.set(region.page, canvas)
       }
       parts.push(canvasToDataUrl(cropCanvas(canvas, region), 0.95))

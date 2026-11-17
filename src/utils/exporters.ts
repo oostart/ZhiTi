@@ -4,6 +4,7 @@ import PptxGenJS from 'pptxgenjs'
 import type { ExportOptions, Question } from '../types'
 import { createTextCanvas, dataUrlToBytes, loadImage, mimeOf, sanitizeFileName } from './image'
 import { renderQuestionBlock } from './contentRender'
+import { exportDocx } from './docxExport'
 
 const DPI = 200
 const PX_PER_MM = DPI / 25.4
@@ -345,10 +346,11 @@ export async function exportZip(questions: Question[], options: ExportOptions): 
   return { blob, filename: `${baseName(options)}-素材包.zip`, warnings: [] }
 }
 
-export type ExportFormat = 'pdf' | 'pptx' | 'zip'
+export type ExportFormat = 'pdf' | 'docx' | 'pptx' | 'zip'
 
 export const FORMAT_LABELS: Record<ExportFormat, string> = {
   pdf: 'PDF',
+  docx: 'Word 文档',
   pptx: 'PPT 演示文稿',
   zip: '素材包 ZIP'
 }
@@ -362,6 +364,8 @@ export async function exportQuestions(
   switch (format) {
     case 'pdf':
       return exportPdf(questions, options, onProgress)
+    case 'docx':
+      return exportDocx(questions, options, onProgress)
     case 'pptx':
       return exportPptx(questions, options, onProgress)
     case 'zip':

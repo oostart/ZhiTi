@@ -42,7 +42,7 @@ const topbar = computed<{ title: string; subtitle: string }>(() => {
         title: activePaper.value?.title || '题目切割',
         subtitle: activePaper.value
           ? `${subjectName(activePaper.value.subject)} · ${activePaper.value.grade} · 共 ${activePaper.value.page_count} 页 · 已切割 ${state.questions.filter((q) => q.paper_id === activePaper.value!.id).length} 题`
-          : '请先导入一份 PDF 试卷'
+          : '请先导入一份 PDF 或 Word 试卷'
       }
     case 'bank':
       return {

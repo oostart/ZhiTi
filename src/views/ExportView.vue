@@ -9,6 +9,7 @@ import {
   ChevronUp,
   Download,
   FileText,
+  FileDown,
   GripVertical,
   Loader2,
   Package,
@@ -60,6 +61,7 @@ const options = reactive<ExportOptions>({
 
 const formats: { key: ExportFormat; label: string; desc: string; icon: typeof FileText }[] = [
   { key: 'pdf', label: FORMAT_LABELS.pdf, desc: '按题目文档重新排版，公式与图形清晰', icon: FileText },
+  { key: 'docx', label: FORMAT_LABELS.docx, desc: '文字可编辑，公式为 Word 原生公式', icon: FileDown },
   { key: 'pptx', label: FORMAT_LABELS.pptx, desc: '一题一页，按题目文档排版，适合投屏', icon: Presentation },
   { key: 'zip', label: FORMAT_LABELS.zip, desc: '全部题目原图 + 清单，便于归档', icon: Package }
 ]
@@ -455,7 +457,7 @@ async function exportWithAvailableContent() {
       </div>
 
       <div class="hint" style="margin-top: 12px; line-height: 1.7">
-        导出说明：PDF / PPT 按「题目文档」的结构化内容重新排版，ZIP 仍导出题目原图。点击导出会弹出保存位置选择窗口。
+        导出说明：PDF / Word / PPT 按「题目文档」的结构化内容重新排版，ZIP 仍导出题目原图。点击导出会弹出保存位置选择窗口。
       </div>
     </aside>
   </div>
@@ -494,7 +496,7 @@ async function exportWithAvailableContent() {
 
   <AppModal v-if="contentMissingOpen" title="有题目还没有生成题目文档" :width="720" @close="contentMissingOpen = false">
     <template #description>
-      已勾选 {{ selectedQuestions.length }} 道题，其中 {{ missingContentQuestions.length }} 道还没有 AI 识别的题目文档。PDF / PPT
+      已勾选 {{ selectedQuestions.length }} 道题，其中 {{ missingContentQuestions.length }} 道还没有 AI 识别的题目文档。PDF / Word / PPT
       需要基于题目文档排版，可在下方直接生成，或跳过这些题继续导出。
     </template>
 

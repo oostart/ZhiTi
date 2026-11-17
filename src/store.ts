@@ -1,6 +1,6 @@
 import { reactive } from 'vue'
 import { repositories, db } from './db'
-import { disposeAllDocuments } from './utils/pdf'
+import { disposeAllSources } from './utils/source'
 import type { AppSettings, KnowledgePoint, Paper, Question, Region } from './types'
 
 export type ViewKey = 'import' | 'cut' | 'bank' | 'export' | 'settings'
@@ -201,7 +201,7 @@ export async function reloadStore(): Promise<void> {
   ui.pendingAnswers = []
   ui.activePendingAnswerId = null
   sessionStorage.removeItem(PENDING_ANSWER_FLAG)
-  await disposeAllDocuments()
+  await disposeAllSources()
   await initStore()
 }
 
@@ -222,6 +222,7 @@ export async function createPaper(input: {
   grade: string
   page_count: number
   source_name?: string
+  source_type?: Paper['source_type']
   file: ArrayBuffer
 }): Promise<Paper> {
   const paper: Paper = {
@@ -232,7 +233,8 @@ export async function createPaper(input: {
     grade: input.grade,
     created_at: new Date().toISOString(),
     page_count: input.page_count,
-    source_name: input.source_name
+    source_name: input.source_name,
+    source_type: input.source_type
   }
   const id = await db.put('papers', withoutId(paper))
   paper.id = id

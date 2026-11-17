@@ -18,6 +18,8 @@
     "@tiptap/pm": "^2.27.3",
     "@tiptap/starter-kit": "^2.27.3",
     "@tiptap/vue-3": "^2.27.3",
+    "docx": "^9.15.3",
+    "docx-preview": "^0.4.1",
     "html-to-image": "^1.11.13",
     "jszip": "^3.10.1",
     "katex": "^0.16.47",

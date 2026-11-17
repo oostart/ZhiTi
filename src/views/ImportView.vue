@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, shallowRef } from 'vue'
 import { FileText, Loader2, Pencil, Scissors, Trash2, UploadCloud, Wand2 } from 'lucide-vue-next'
-import { cacheDocument, disposeDocument, readPdfFile, type OpenedPdf } from '../utils/pdf'
+import { disposePaperSource, isDocxFile, openDocumentFile, type OpenedDocument } from '../utils/source'
 import { createPaper, deletePaper, state, ui, updatePaper } from '../store'
 import { toast } from '../composables/toast'
 import AppModal from '../components/AppModal.vue'
@@ -9,7 +9,7 @@ import { subjectName } from '../utils/label'
 import { type Paper } from '../types'
 
 const fileInput = ref<HTMLInputElement>()
-const opened = shallowRef<OpenedPdf | null>(null)
+const opened = shallowRef<OpenedDocument | null>(null)
 const selectedFile = ref<File | null>(null)
 const parsing = ref(false)
 const importing = ref(false)
@@ -52,8 +52,9 @@ function questionCount(paperId: number): number {
 
 async function handleFile(file: File | undefined | null) {
   if (!file) return
-  if (!/\.pdf$/i.test(file.name) && file.type !== 'application/pdf') {
-    toast('仅支持 PDF 格式的试卷文件', 'error')
+  const isPdf = /\.pdf$/i.test(file.name) || file.type === 'application/pdf'
+  if (!isPdf && !isDocxFile(file)) {
+    toast('仅支持 PDF 或 Word（.docx）格式的试卷文件', 'error')
     return
   }
   if (file.size > 120 * 1024 * 1024) {
@@ -64,16 +65,16 @@ async function handleFile(file: File | undefined | null) {
   selectedFile.value = file
   opened.value = null
   try {
-    const result = await readPdfFile(file)
+    const result = await openDocumentFile(file)
     opened.value = result
-    form.title = file.name.replace(/\.pdf$/i, '').replace(/[_-]+/g, ' ').trim() || '未命名试卷'
-    toast(`已解析 ${result.pageCount} 页 PDF，请确认试卷信息`, 'success')
+    form.title = file.name.replace(/\.(pdf|docx)$/i, '').replace(/[_-]+/g, ' ').trim() || '未命名试卷'
+    toast(`已解析 ${result.pageCount} 页${result.kind === 'docx' ? ' Word' : ' PDF'}，请确认试卷信息`, 'success')
   } catch (error) {
     const message = (error as Error).message || ''
     selectedFile.value = null
     if (fileInput.value) fileInput.value.value = ''
-    if (/password/i.test(message)) toast('该 PDF 已加密，暂不支持导入加密文档', 'error')
-    else toast('PDF 解析失败：文件可能已损坏或格式不支持', 'error')
+    if (isPdf && /password/i.test(message)) toast('该 PDF 已加密，暂不支持导入加密文档', 'error')
+    else toast('解析失败：文件可能已损坏或格式不支持', 'error')
   } finally {
     parsing.value = false
   }
@@ -100,9 +101,10 @@ async function doImport() {
       grade: form.grade.trim(),
       page_count: opened.value.pageCount,
       source_name: selectedFile.value?.name,
+      source_type: opened.value.kind,
       file: opened.value.bytes
     })
-    cacheDocument(paper.id, opened.value.doc)
+    opened.value.cache(paper.id)
     ui.activePaperId = paper.id
     ui.view = 'cut'
     toast(`「${paper.title}」导入成功，共 ${paper.page_count} 页，开始切割题目`, 'success')
@@ -166,7 +168,7 @@ async function confirmDelete() {
   if (pendingDelete.value == null) return
   const id = pendingDelete.value
   await deletePaper(id)
-  await disposeDocument(id)
+  await disposePaperSource(id)
   pendingDelete.value = null
   toast('已删除该试卷及关联题目', 'success')
 }
@@ -182,8 +184,8 @@ function formatDate(iso: string): string {
     <div class="workspace" style="max-width: 1040px; margin: 0 auto; width: 100%">
       <div class="hero">
         <div>
-          <h1>导入一份 PDF 试卷</h1>
-          <p>系统会解析每一页并生成高清预览，接着用框选把题目切进题库。原始 PDF 保存在本地，可随时继续切割。</p>
+          <h1>导入一份试卷</h1>
+          <p>支持 PDF 与 Word（.docx）试卷。系统会解析每一页并生成高清预览，接着用框选把题目切进题库。原始文件保存在本地，可随时继续切割。</p>
         </div>
         <div class="hero-badges">
           <span class="chip"><Wand2 :size="12" /> 智能切割</span>
@@ -202,11 +204,11 @@ function formatDate(iso: string): string {
             @dragleave.prevent="dragging = false"
             @drop.prevent="onDrop"
           >
-            <input ref="fileInput" type="file" accept="application/pdf,.pdf" hidden @change="handleFile(($event.target as HTMLInputElement).files?.[0])" />
+            <input ref="fileInput" type="file" accept="application/pdf,.pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx" hidden @change="handleFile(($event.target as HTMLInputElement).files?.[0])" />
             <template v-if="!selectedFile">
               <div class="drop-icon"><UploadCloud :size="26" /></div>
-              <div class="drop-title">拖拽 PDF 到此处，或点击选择文件</div>
-              <div class="hint">支持多页 PDF 试卷（十几页也可），最大 120 MB · 文件仅保存在本机</div>
+              <div class="drop-title">拖拽 PDF / Word 到此处，或点击选择文件</div>
+              <div class="hint">支持多页 PDF 与 .docx 试卷（十几页也可），最大 120 MB · 文件仅保存在本机</div>
             </template>
             <template v-else>
               <div class="drop-icon" :style="{ background: parsing ? '#eef0ff' : '#e7f7f1', color: parsing ? '#4f46e5' : '#059669' }">
@@ -215,7 +217,7 @@ function formatDate(iso: string): string {
               </div>
               <div class="drop-title">{{ selectedFile.name }}</div>
               <div class="hint">
-                <template v-if="parsing">正在解析 PDF 页面…</template>
+                <template v-if="parsing">正在解析页面…</template>
                 <template v-else-if="opened">{{ fileSizeText }} · {{ opened.pageCount }} 页 · 解析完成，点击可更换文件</template>
                 <template v-else>解析失败，点击重新选择</template>
               </div>
@@ -264,7 +266,7 @@ function formatDate(iso: string): string {
             已导入试卷 <span class="count">{{ state.papers.length }}</span>
           </div>
           <div v-if="state.papers.length === 0" class="hint" style="padding: 24px 0; text-align: center">
-            还没有导入过试卷。<br />导入第一份 PDF 后，它会出现在这里。
+            还没有导入过试卷。<br />导入第一份 PDF 或 Word 后，它会出现在这里。
           </div>
           <div v-else class="paper-list">
             <div v-for="paper in state.papers" :key="paper.id" class="paper-row">
@@ -307,7 +309,7 @@ function formatDate(iso: string): string {
     </AppModal>
 
     <AppModal v-if="editingPaper" title="编辑试卷信息" @close="editingPaper = null">
-      <template #description>修改仅影响题库中的试卷信息，不会改动原始 PDF 文件。</template>
+      <template #description>修改仅影响题库中的试卷信息，不会改动原始试卷文件。</template>
       <div class="field">
         <label class="label">试卷标题<span class="req">*</span></label>
         <input v-model="editForm.title" class="input" placeholder="试卷标题" />

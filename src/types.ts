@@ -1,3 +1,6 @@
+/** 试卷原始文件的载体类型；旧数据缺省视为 pdf */
+export type PaperSourceType = 'pdf' | 'docx'
+
 export interface Paper {
   id: number
   title: string
@@ -7,6 +10,7 @@ export interface Paper {
   created_at: string
   page_count: number
   source_name?: string
+  source_type?: PaperSourceType
 }
 
 /** 归一化坐标：0~1，原点在页面左上角 */

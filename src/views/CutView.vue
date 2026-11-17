@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
-import type { PDFDocumentProxy } from 'pdfjs-dist'
 import {
   ChevronLeft,
   ChevronRight,
@@ -14,14 +13,14 @@ import {
   ZoomOut
 } from 'lucide-vue-next'
 import { canvasToDataUrl, composeDataUrls, cropCanvas } from '../utils/image'
-import { extractTextFromRegions, getPaperDocument, renderPageToCanvas } from '../utils/pdf'
+import { getPaperSource, type PaperSource } from '../utils/source'
 import { addPendingAnswer, createQuestion, deleteQuestion, removePendingAnswer, state, ui } from '../store'
 import { toast } from '../composables/toast'
 import { guessQuestionType } from '../utils/questionType'
 import { answerTag, questionTag, subjectName } from '../utils/label'
 import type { Question, Region } from '../types'
 
-const doc = shallowRef<PDFDocumentProxy | null>(null)
+const doc = shallowRef<PaperSource | null>(null)
 const loading = ref(false)
 const loadError = ref('')
 const page = ref(1)
@@ -91,7 +90,7 @@ async function renderPreview() {
   const token = ++renderToken
   rendering.value = true
   try {
-    const canvas = await renderPageToCanvas(document, page.value, displayWidth.value * 1.5)
+    const canvas = await document.renderPage(page.value, displayWidth.value * 1.5)
     if (token !== renderToken) return
     pageImage.value = canvasToDataUrl(canvas, 0.94)
   } catch {
@@ -115,19 +114,19 @@ async function loadDocument() {
   loading.value = true
   loadError.value = ''
   try {
-    const document = await getPaperDocument(paperId)
+    const document = await getPaperSource(paperId)
     if (token !== loadToken) return
     doc.value = document
-    pageCount.value = document.numPages
+    pageCount.value = document.pageCount
     const savedPage = ui.cutPageByPaper[paperId] ?? 1
-    page.value = Math.min(Math.max(1, savedPage), document.numPages)
+    page.value = Math.min(Math.max(1, savedPage), document.pageCount)
     draftBox.value = null
     pendingBoxes.value = []
     await renderPreview()
   } catch (error) {
     if (token !== loadToken) return
     doc.value = null
-    loadError.value = (error as Error).message || 'PDF 载入失败'
+    loadError.value = (error as Error).message || '试卷载入失败'
     toast(loadError.value, 'error')
   } finally {
     if (token === loadToken) loading.value = false
@@ -248,13 +247,14 @@ function clearPending() {
 
 async function buildImage(regions: Region[]): Promise<string> {
   if (!doc.value) throw new Error('文档未就绪')
+  const source = doc.value
   const ordered = [...regions].sort((a, b) => a.page - b.page || a.y - b.y)
   const pageCanvases = new Map<number, HTMLCanvasElement>()
   const parts: string[] = []
   for (const region of ordered) {
     let canvas = pageCanvases.get(region.page)
     if (!canvas) {
-      canvas = await renderPageToCanvas(doc.value, region.page, 1600)
+      canvas = await source.renderPage(region.page, 1600)
       pageCanvases.set(region.page, canvas)
     }
     parts.push(canvasToDataUrl(cropCanvas(canvas, region)))
@@ -266,7 +266,7 @@ async function buildImage(regions: Region[]): Promise<string> {
 async function saveRegions(regions: Region[]): Promise<Question | null> {
   if (!ui.activePaperId || !doc.value) return null
   const image = await buildImage(regions)
-  const text = await extractTextFromRegions(ui.activePaperId, doc.value, regions)
+  const text = await doc.value.extractText(regions)
   return await createQuestion({
     paper_id: ui.activePaperId,
     image,
@@ -454,7 +454,7 @@ onBeforeUnmount(() => {
         <div v-if="!ui.activePaperId" class="empty" style="margin: auto">
           <div class="empty-icon"><Scissors :size="24" /></div>
           <div class="empty-title">还没有选择试卷</div>
-          <div class="empty-desc">先导入一份 PDF 试卷，再回来进行框选切割。</div>
+          <div class="empty-desc">先导入一份 PDF 或 Word 试卷，再回来进行框选切割。</div>
           <button class="btn btn-primary" style="margin-top: 6px" @click="ui.view = 'import'">去导入试卷</button>
         </div>
 
