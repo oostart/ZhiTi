@@ -76,6 +76,8 @@ const pendingLayout = ref(false)
 const pendingBatch = ref(false)
 const batchBusy = ref(false)
 const batchStop = ref(false)
+const batchKnowledge = ref(false)
+const batchAnalysis = ref(false)
 const batchTotal = ref(0)
 const batchDone = ref(0)
 const batchCurrent = ref('')
@@ -648,6 +650,8 @@ async function runBatchLayout() {
   await flushDraft(true)
   const targets = [...unrecognizedQuestions.value]
   if (!targets.length) return
+  const withKnowledge = batchKnowledge.value
+  const withAnalysis = batchAnalysis.value
   batchBusy.value = true
   batchStop.value = false
   batchTotal.value = targets.length
@@ -657,21 +661,57 @@ async function runBatchLayout() {
     for (let i = 0; i < targets.length; i++) {
       if (batchStop.value) break
       const question = targets[i]
-      batchCurrent.value = questionLabelOf(question)
+      const label = questionLabelOf(question)
+      batchCurrent.value = label
       try {
         const image = await buildLayoutImage(question)
         const result = await recognizeQuestionLayout(state.settings.ai, image)
-        await updateQuestion(question.id, { content: result.content, text: result.text })
+        const patch: Partial<Question> = { content: result.content, text: result.text }
+        const paper = paperOf(question)
+        const subject = paper?.subject ?? ''
+        const grade = paper?.grade ?? ''
+        if (withKnowledge) {
+          batchCurrent.value = `${label} · 生成知识点`
+          try {
+            const names = await recommendKnowledge(
+              state.settings.ai,
+              { text: result.text, subject, grade },
+              state.knowledge.map((k) => k.name)
+            )
+            for (const name of names) {
+              await addKnowledgePoint(name, subject)
+            }
+            patch.knowledge = Array.from(new Set([...question.knowledge, ...names]))
+          } catch {
+            /* 知识点生成失败不影响题目文档结果 */
+          }
+        }
+        if (withAnalysis) {
+          batchCurrent.value = `${label} · 生成题目理解`
+          try {
+            patch.analysis = await analyzeQuestion(state.settings.ai, {
+              text: result.text,
+              subject,
+              grade,
+              answer: question.answer
+            })
+          } catch {
+            /* 题目理解生成失败不影响题目文档结果 */
+          }
+        }
+        await updateQuestion(question.id, patch)
         if (draft.value?.id === question.id && !dirty.value) {
           suppressDirty = true
           draft.value.content = result.content
           draft.value.text = result.text
+          if (patch.knowledge) draft.value.knowledge = patch.knowledge
+          if (patch.analysis !== undefined) draft.value.analysis = patch.analysis
           await nextTick()
           suppressDirty = false
           dirty.value = false
         }
       } catch {
-        batchFailed.value.push(questionLabelOf(question))
+        batchFailed.value.push(label)
       }
       batchDone.value = i + 1
     }
@@ -979,6 +1019,22 @@ onBeforeUnmount(() => {
       <template #description>
         将对当前筛选结果中 {{ unrecognizedQuestions.length }} 道未识别题目逐题调用视觉模型生成题目文档，已识别的题目会自动跳过，可随时停止。
       </template>
+      <div class="batch-options">
+        <label class="batch-option">
+          <input v-model="batchKnowledge" type="checkbox" />
+          <span>
+            <strong>同时生成知识点</strong>
+            <em>识别后调用 AI 推荐知识点，并写入题目与知识点库</em>
+          </span>
+        </label>
+        <label class="batch-option">
+          <input v-model="batchAnalysis" type="checkbox" />
+          <span>
+            <strong>同时生成题目理解</strong>
+            <em>识别后调用 AI 生成题目理解，便于备课与讲解</em>
+          </span>
+        </label>
+      </div>
       <template #actions>
         <button class="btn" @click="pendingBatch = false">取消</button>
         <button class="btn btn-primary" @click="runBatchLayout"><Sparkles :size="14" /> 开始识别</button>
@@ -1160,6 +1216,43 @@ onBeforeUnmount(() => {
   color: var(--accent-dark);
   border-radius: 999px;
   font-size: 11.5px;
+}
+.batch-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.batch-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fafbfe;
+  cursor: pointer;
+}
+.batch-option:hover {
+  border-color: #c9c4f7;
+}
+.batch-option input {
+  flex-shrink: 0;
+  margin: 2px 0 0;
+  accent-color: #5b52ea;
+}
+.batch-option strong {
+  display: block;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.batch-option em {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-3);
+  font-size: 11.5px;
+  font-style: normal;
+  line-height: 1.5;
 }
 .list-header {
   display: flex;

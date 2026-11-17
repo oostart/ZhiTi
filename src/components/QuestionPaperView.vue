@@ -315,7 +315,12 @@ onMounted(() =>
                 <Loader2 :size="12" class="spin" /> {{ props.recognizeStatus }}
               </div>
 
-              <ContentEditor :model-value="props.modelValue" variant="paper" @update:model-value="update" />
+              <ContentEditor
+                :model-value="props.modelValue"
+                :source-image="props.image"
+                variant="paper"
+                @update:model-value="update"
+              />
 
               <div class="paper-divider"><span>教师参考</span></div>
 

@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { onBeforeUnmount, watch } from 'vue'
+import { computed, onBeforeUnmount, provide, watch } from 'vue'
 import type { JSONContent } from '@tiptap/core'
 import { EditorContent, useEditor } from '@tiptap/vue-3'
 import { editorExtensions } from '../editor/extensions'
+import { FIGURE_SOURCE_KEY } from '../editor/figureContext'
 import type { ContentDoc } from '../types'
 
 const props = withDefaults(
@@ -10,11 +11,14 @@ const props = withDefaults(
     modelValue: ContentDoc
     variant?: 'plain' | 'paper'
     readonly?: boolean
+    sourceImage?: string
   }>(),
-  { variant: 'plain', readonly: false }
+  { variant: 'plain', readonly: false, sourceImage: '' }
 )
 
 const emit = defineEmits<{ (event: 'update:modelValue', value: ContentDoc): void }>()
+
+provide(FIGURE_SOURCE_KEY, computed(() => props.sourceImage))
 
 const editor = useEditor({
   content: props.modelValue as unknown as JSONContent,
@@ -152,8 +156,16 @@ onBeforeUnmount(() => editor.value?.destroy())
   border: 0;
   padding: 0;
 }
+.content-editor--paper:not(.content-editor--readonly) :deep(.figure-node) {
+  outline: 1px dashed var(--border);
+  outline-offset: 4px;
+  border-radius: 4px;
+}
 .content-editor--paper :deep(.figure-bar) {
   display: none;
+}
+.content-editor--paper:not(.content-editor--readonly) :deep(.figure-bar) {
+  display: flex;
 }
 .content-editor--readonly :deep(.content-editor-body) {
   cursor: default;
