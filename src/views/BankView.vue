@@ -73,11 +73,19 @@ const imagePreview = ref('')
 const layoutBusy = ref(false)
 const layoutStatus = ref('')
 const pendingLayout = ref(false)
+const pendingBatch = ref(false)
+const batchBusy = ref(false)
+const batchStop = ref(false)
+const batchTotal = ref(0)
+const batchDone = ref(0)
+const batchCurrent = ref('')
+const batchFailed = ref<string[]>([])
 const paperOpen = ref(false)
 let suppressDirty = false
 
 const activePaper = computed(() => (draft.value ? paperOf(draft.value) : undefined))
 const contentStats = computed(() => (draft.value?.content ? summarizeContent(draft.value.content) : null))
+const hasDraftContent = computed(() => hasContentDoc(draft.value?.content))
 const editorContent = computed<ContentDoc>(() => draft.value?.content ?? { type: 'doc', content: [] })
 const paperImage = computed(() => draft.value?.image ?? '')
 const paperTitle = computed(() => {
@@ -169,6 +177,7 @@ const hasFilters = computed(
   () =>
     !!(keyword.value || filterSubject.value || filterGrade.value || filterYear.value || filterType.value || filterDifficulty.value || filterKnowledge.value || filterPaper.value)
 )
+const unrecognizedQuestions = computed(() => filtered.value.filter((q) => !hasContentDoc(q.content)))
 
 watch(filtered, () => {
   pageIndex.value = Math.min(pageIndex.value, totalPages.value)
@@ -552,9 +561,17 @@ function updateDifficulty(value: number) {
   dirty.value = true
 }
 
+function onQuestionTypeChange(event: Event) {
+  updateQuestionType((event.target as HTMLSelectElement).value)
+}
+
+function onDifficultyChange(event: Event) {
+  updateDifficulty(Number((event.target as HTMLSelectElement).value))
+}
+
 function requestLayout() {
   if (!draft.value) return
-  if (draft.value.content) {
+  if (hasDraftContent.value) {
     pendingLayout.value = true
     return
   }
@@ -562,18 +579,19 @@ function requestLayout() {
 }
 
 function relayoutFromPaper() {
-  paperOpen.value = false
   requestLayout()
 }
 
 function openPaper() {
-  if (!draft.value?.content) return
-  const merged = mergeContinuationLines(draft.value.content)
-  if (merged.changed) {
-    draft.value.content = merged.doc
-    draft.value.text = docToPlainText(merged.doc)
-    dirty.value = true
-    toast('已合并断行，保存后生效', 'success', 2400)
+  if (!draft.value) return
+  if (hasDraftContent.value) {
+    const merged = mergeContinuationLines(draft.value.content!)
+    if (merged.changed) {
+      draft.value.content = merged.doc
+      draft.value.text = docToPlainText(merged.doc)
+      dirty.value = true
+      toast('已合并断行，保存后生效', 'success', 2400)
+    }
   }
   paperOpen.value = true
 }
@@ -611,6 +629,69 @@ async function runLayout() {
   }
 }
 
+function startBatchLayout() {
+  if (batchBusy.value) return
+  if (!state.settings.ai.apiKey.trim()) {
+    toast('请先在「设置」中填写 AI 接口与密钥', 'warning')
+    return
+  }
+  if (!unrecognizedQuestions.value.length) {
+    toast('当前筛选结果里没有未识别的题目', 'info')
+    return
+  }
+  pendingBatch.value = true
+}
+
+async function runBatchLayout() {
+  pendingBatch.value = false
+  if (batchBusy.value) return
+  await flushDraft(true)
+  const targets = [...unrecognizedQuestions.value]
+  if (!targets.length) return
+  batchBusy.value = true
+  batchStop.value = false
+  batchTotal.value = targets.length
+  batchDone.value = 0
+  batchFailed.value = []
+  try {
+    for (let i = 0; i < targets.length; i++) {
+      if (batchStop.value) break
+      const question = targets[i]
+      batchCurrent.value = questionLabelOf(question)
+      try {
+        const image = await buildLayoutImage(question)
+        const result = await recognizeQuestionLayout(state.settings.ai, image)
+        await updateQuestion(question.id, { content: result.content, text: result.text })
+        if (draft.value?.id === question.id && !dirty.value) {
+          suppressDirty = true
+          draft.value.content = result.content
+          draft.value.text = result.text
+          await nextTick()
+          suppressDirty = false
+          dirty.value = false
+        }
+      } catch {
+        batchFailed.value.push(questionLabelOf(question))
+      }
+      batchDone.value = i + 1
+    }
+    const stopped = batchStop.value
+    const ok = batchDone.value - batchFailed.value.length
+    const failed = batchFailed.value.length
+    const remain = unrecognizedQuestions.value.length
+    const head = stopped ? `已停止批量识别：成功 ${ok} 道` : `批量识别完成：成功 ${ok} 道`
+    const tail = failed ? `，失败 ${failed} 道（${batchFailed.value.slice(0, 3).join('、')}${failed > 3 ? ' 等' : ''}）` : ''
+    const rest = stopped && remain ? `，还有 ${remain} 道未识别` : ''
+    toast(`${head}${tail}${rest}`, failed ? 'warning' : 'success', 6200)
+  } finally {
+    batchBusy.value = false
+    batchCurrent.value = ''
+    batchStop.value = false
+    batchDone.value = 0
+    batchTotal.value = 0
+  }
+}
+
 async function confirmDelete() {
   if (!pendingDelete.value) return
   const id = pendingDelete.value.id
@@ -643,8 +724,7 @@ onMounted(async () => {
   const question = state.questions.find((q) => q.id === pendingId)
   if (!question) return
   await openQuestion(question)
-  if (question.content) openPaper()
-  else toast('该题还没有题目文档，请先生成题目文档', 'warning', 4200)
+  openPaper()
 })
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown)
@@ -708,6 +788,14 @@ onBeforeUnmount(() => {
             <option value="difficulty">难度从高到低</option>
           </select>
           <button v-if="hasFilters" class="btn btn-ghost btn-sm" @click="resetFilters"><RotateCcw :size="12" /> 重置筛选</button>
+          <button class="btn btn-sm btn-ai" :disabled="batchBusy || !unrecognizedQuestions.length" @click="startBatchLayout">
+            <Loader2 v-if="batchBusy" :size="12" class="spin" />
+            <Sparkles v-else :size="12" />
+            {{ batchBusy ? `识别中 ${batchDone}/${batchTotal}` : `AI识别未识别 (${unrecognizedQuestions.length})` }}
+          </button>
+          <button v-if="batchBusy" class="btn btn-ghost btn-sm" @click="batchStop = true">
+            <X :size="12" /> 停止
+          </button>
 
           <div class="toolbar-spacer" />
           <div v-if="ui.exportIds.length" class="selection-chip">
@@ -722,7 +810,10 @@ onBeforeUnmount(() => {
           共 <strong style="color: var(--text)">{{ filtered.length }}</strong> 道题
           <span v-if="ui.exportIds.length"> · 已选 {{ ui.exportIds.length }} 道</span>
         </div>
-        <div v-if="filtered.length" class="hint">第 {{ (pageIndex - 1) * pageSize + 1 }}–{{ Math.min(pageIndex * pageSize, filtered.length) }} 条</div>
+        <div v-if="batchBusy" class="hint" style="display: flex; align-items: center; gap: 6px">
+          <Loader2 :size="12" class="spin" /> 正在识别 {{ batchCurrent || '…' }}（{{ batchDone }}/{{ batchTotal }}）
+        </div>
+        <div v-else-if="filtered.length" class="hint">第 {{ (pageIndex - 1) * pageSize + 1 }}–{{ Math.min(pageIndex * pageSize, filtered.length) }} 条</div>
       </div>
 
       <div class="bank-content">
@@ -819,35 +910,45 @@ onBeforeUnmount(() => {
           </div>
           <div v-else class="editor-image-placeholder">暂无题目原图</div>
 
-          <div v-if="!draft.content" class="content-empty">
-            <button class="btn btn-primary btn-sm" :disabled="layoutBusy" @click="requestLayout">
-              <Loader2 v-if="layoutBusy" :size="12" class="spin" />
-              <Sparkles v-else :size="12" /> AI识别
-            </button>
-          </div>
-
-          <template v-else>
-            <div class="content-toolbar">
-              <div class="hint">
+          <div class="content-toolbar">
+            <div class="hint">
+              <template v-if="hasDraftContent">
                 {{ contentStats?.paragraphs }} 段 · {{ contentStats?.math }} 公式 · {{ contentStats?.figures }} 图形
                 <span v-if="contentStats?.unresolved"> · {{ contentStats?.unresolved }} 个待确认</span>
-              </div>
-              <div class="content-toolbar-actions">
-                <button class="btn btn-ghost btn-sm" :disabled="layoutBusy" @click="requestLayout">
-                  <Loader2 v-if="layoutBusy" :size="12" class="spin" />
-                  <Sparkles v-else :size="12" /> 重新识别
-                </button>
-                <button class="btn btn-primary btn-sm" @click="openPaper">
-                  <Maximize2 :size="12" /> 打开题目文档
-                </button>
-              </div>
+              </template>
+              <template v-else>尚未识别题目文档</template>
             </div>
-            <div v-if="layoutBusy" class="hint" style="margin-bottom: 6px">{{ layoutStatus }}</div>
-            <div class="paper-mini" @click="openPaper">
-              <ContentEditor :model-value="editorContent" variant="paper" readonly />
+            <div class="content-toolbar-actions">
+              <button class="btn btn-primary btn-sm" @click="openPaper">
+                <Maximize2 :size="12" /> 打开题目文档
+              </button>
             </div>
-            <div class="hint" style="margin-top: 6px">点击预览打开题目文档；AI 生成请打开文档，公式可点开改 LaTeX。</div>
-          </template>
+          </div>
+
+          <div v-if="hasDraftContent" class="paper-mini" @click="openPaper">
+            <ContentEditor :model-value="editorContent" variant="paper" readonly />
+          </div>
+          <div v-else class="content-empty" @click="openPaper">
+            <div style="font-size: 13px; font-weight: 600">还没有题目文档内容</div>
+            <div class="hint">打开文档后点「AI识别」生成，也可以直接在文档中编辑。</div>
+          </div>
+          <div class="hint" style="margin-top: 6px">AI 识别、校对与参考答案都在题目文档中完成。</div>
+        </div>
+
+        <div class="inspector-attrs">
+          <div class="inspector-attrs-title">题目属性</div>
+          <label class="inspector-attr">
+            <span>题型</span>
+            <select class="select" :value="draft.question_type" @change="onQuestionTypeChange">
+              <option v-for="type in QUESTION_TYPES" :key="type" :value="type">{{ type }}</option>
+            </select>
+          </label>
+          <label class="inspector-attr">
+            <span>难度</span>
+            <select class="select" :value="draft.difficulty" @change="onDifficultyChange">
+              <option v-for="level in 5" :key="level" :value="level">{{ level }} · {{ DIFFICULTY_LABELS[level] }}</option>
+            </select>
+          </label>
         </div>
 
         <div class="editor-actions">
@@ -866,11 +967,21 @@ onBeforeUnmount(() => {
       </template>
     </AppModal>
 
-    <AppModal v-if="pendingLayout" title="重新识别这道题？" @close="pendingLayout = false">
+    <AppModal v-if="pendingLayout" title="重新识别这道题？" :z-index="95" @close="pendingLayout = false">
       <template #description>当前的结构化内容会被新的识别结果覆盖，原图与答案不受影响。</template>
       <template #actions>
         <button class="btn" @click="pendingLayout = false">取消</button>
         <button class="btn btn-primary" @click="runLayout"><Sparkles :size="14" /> 重新识别</button>
+      </template>
+    </AppModal>
+
+    <AppModal v-if="pendingBatch" title="批量识别未识别的题目？" @close="pendingBatch = false">
+      <template #description>
+        将对当前筛选结果中 {{ unrecognizedQuestions.length }} 道未识别题目逐题调用视觉模型生成题目文档，已识别的题目会自动跳过，可随时停止。
+      </template>
+      <template #actions>
+        <button class="btn" @click="pendingBatch = false">取消</button>
+        <button class="btn btn-primary" @click="runBatchLayout"><Sparkles :size="14" /> 开始识别</button>
       </template>
     </AppModal>
 
@@ -917,7 +1028,7 @@ onBeforeUnmount(() => {
     </AppModal>
 
     <QuestionPaperView
-      v-if="paperOpen && draft?.content"
+      v-if="paperOpen && draft"
       :model-value="editorContent"
       :image="paperImage"
       :title="paperTitle"
@@ -927,17 +1038,15 @@ onBeforeUnmount(() => {
       :answer-image="draft.answerImage || ''"
       :analysis="draft.analysis"
       :knowledge="draft.knowledge"
-      :question-type="draft.question_type"
-      :difficulty="draft.difficulty"
       :ai-busy="aiBusy"
       :answer-recognizing="answerRecognizing"
+      :recognizing="layoutBusy"
+      :recognize-status="layoutStatus"
       @update:model-value="updateContent"
       @update:answer="updateAnswer"
       @update:answer-image="updateAnswerImage"
       @update:analysis="updateAnalysis"
       @update:knowledge="updateKnowledge"
-      @update:question-type="updateQuestionType"
-      @update:difficulty="updateDifficulty"
       @recognize-answer="recognizeAnswerFromImage"
       @ai="runAi"
       @save="saveDraft()"
@@ -1021,6 +1130,24 @@ onBeforeUnmount(() => {
   padding-top: 0;
   padding-bottom: 0;
   font-size: 12.5px;
+}
+.btn-ai {
+  border-color: transparent;
+  background: linear-gradient(135deg, #8b5cf6, #4f46e5);
+  color: #fff;
+  font-weight: 600;
+  box-shadow: 0 3px 10px rgba(109, 40, 217, 0.32);
+}
+.btn-ai:hover:not(:disabled) {
+  background: linear-gradient(135deg, #7c3aed, #4338ca);
+  border-color: transparent;
+}
+.btn-ai:disabled {
+  background: #eef0f7;
+  color: var(--text-3);
+  border-color: var(--border);
+  box-shadow: none;
+  opacity: 1;
 }
 .selection-chip {
   display: inline-flex;
@@ -1227,6 +1354,7 @@ onBeforeUnmount(() => {
   border: 1px dashed var(--border-strong);
   border-radius: 9px;
   background: #fafbfe;
+  cursor: pointer;
 }
 .content-toolbar {
   display: flex;
@@ -1278,6 +1406,38 @@ onBeforeUnmount(() => {
 }
 .chip-remove:hover {
   opacity: 1;
+}
+.inspector-attrs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--border);
+}
+.inspector-attrs-title {
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 650;
+}
+.inspector-attr {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-2);
+  font-size: 12px;
+}
+.inspector-attr > span {
+  width: 30px;
+  flex-shrink: 0;
+}
+.inspector-attr .select {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  padding-top: 0;
+  padding-bottom: 0;
+  font-size: 12.5px;
 }
 .editor-actions {
   display: flex;

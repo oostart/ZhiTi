@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import { Brain, Columns2, ImagePlus, Loader2, RefreshCw, Save, Sparkles, Tag, X } from 'lucide-vue-next'
+import { Brain, Columns2, ImagePlus, Loader2, Save, Sparkles, Tag, X } from 'lucide-vue-next'
 import ContentEditor from './ContentEditor.vue'
 import AppModal from './AppModal.vue'
 import { compressImage } from '../utils/image'
+import { hasContentDoc } from '../utils/layout'
 import { renderMathText } from '../utils/mathText'
 import { normalizeNumberedList } from '../utils/text'
 import { toast } from '../composables/toast'
 import type { AnswerBlock, AnswerImageBlock, ContentDoc } from '../types'
-import { DIFFICULTY_LABELS, QUESTION_TYPES } from '../types'
 
 const props = defineProps<{
   modelValue: ContentDoc
@@ -20,10 +20,10 @@ const props = defineProps<{
   answerImage: string
   analysis: string
   knowledge: string[]
-  questionType: string
-  difficulty: number
   aiBusy: '' | 'knowledge' | 'analysis'
   answerRecognizing: boolean
+  recognizing: boolean
+  recognizeStatus: string
 }>()
 
 const emit = defineEmits<{
@@ -35,8 +35,6 @@ const emit = defineEmits<{
   (event: 'update:answer-image', value: string): void
   (event: 'update:analysis', value: string): void
   (event: 'update:knowledge', value: string[]): void
-  (event: 'update:questionType', value: string): void
-  (event: 'update:difficulty', value: number): void
   (event: 'recognize-answer', imageDataUrl: string): void
   (event: 'ai', kind: 'knowledge' | 'analysis'): void
 }>()
@@ -61,6 +59,7 @@ const analysisHtml = computed(() => renderMathText(normalizeNumberedList(props.a
 const figurePreviewStyle = computed(() => (figurePreview.value ? figureStyle(figurePreview.value, true) : {}))
 const answerFigures = computed(() => props.answerBlocks.filter((block): block is AnswerImageBlock => block.type === 'image'))
 const hasAnswerContent = computed(() => !!props.answer.trim() || props.answerBlocks.length > 0)
+const hasContent = computed(() => hasContentDoc(props.modelValue))
 
 /** 图片块按 answerImage 的相对坐标裁剪渲染，避免把同一张图再存一份 */
 function figureStyle(block: AnswerImageBlock, full = false): Record<string, string> {
@@ -239,14 +238,6 @@ function removeKnowledge(name: string) {
   )
 }
 
-function onTypeChange(event: Event) {
-  emit('update:questionType', (event.target as HTMLSelectElement).value)
-}
-
-function onDifficultyChange(event: Event) {
-  emit('update:difficulty', Number((event.target as HTMLSelectElement).value))
-}
-
 watch(
   () => props.answer,
   () => nextTick(() => grow(answerBox.value))
@@ -294,8 +285,10 @@ onMounted(() =>
             <button class="btn btn-ghost btn-sm" @click="compare = !compare">
               <Columns2 :size="14" /> {{ compare ? '只看排版' : '对照原图' }}
             </button>
-            <button class="btn btn-ghost btn-sm" @click="emit('relayout')">
-              <RefreshCw :size="14" /> 重新识别
+            <button class="btn btn-ghost btn-sm" :disabled="props.recognizing" @click="emit('relayout')">
+              <Loader2 v-if="props.recognizing" :size="14" class="spin" />
+              <Sparkles v-else :size="14" />
+              {{ hasContent ? '重新识别' : 'AI识别' }}
             </button>
             <button class="btn btn-primary btn-sm" :disabled="!props.dirty" @click="emit('save')">
               <Save :size="14" /> 保存
@@ -309,6 +302,19 @@ onMounted(() =>
         <div class="paper-body" :class="{ 'paper-body--compare': compare }">
           <div class="paper-stage">
             <article class="paper-sheet">
+              <div v-if="!hasContent" class="paper-doc-empty">
+                <div class="paper-doc-empty-title">尚未生成题目文档</div>
+                <div class="paper-doc-empty-desc">点击「AI识别」把原图转成可编辑的排版，也可以直接在下方手动录入。</div>
+                <button type="button" class="paper-ai-btn" :disabled="props.recognizing" @click="emit('relayout')">
+                  <Loader2 v-if="props.recognizing" :size="12" class="spin" />
+                  <Sparkles v-else :size="12" />
+                  {{ props.recognizing ? '正在识别…' : 'AI识别' }}
+                </button>
+              </div>
+              <div v-if="props.recognizing && props.recognizeStatus" class="paper-recognize-status">
+                <Loader2 :size="12" class="spin" /> {{ props.recognizeStatus }}
+              </div>
+
               <ContentEditor :model-value="props.modelValue" variant="paper" @update:model-value="update" />
 
               <div class="paper-divider"><span>教师参考</span></div>
@@ -456,26 +462,6 @@ onMounted(() =>
                   @input="onAnalysisInput"
                   @blur="analysisEditing = false"
                 />
-              </section>
-
-              <section class="paper-section">
-                <header class="paper-section-head">
-                  <h3 class="paper-section-title">题目属性</h3>
-                </header>
-                <div class="paper-attrs">
-                  <label class="paper-attr">
-                    <span>题型</span>
-                    <select :value="props.questionType" @change="onTypeChange">
-                      <option v-for="type in QUESTION_TYPES" :key="type" :value="type">{{ type }}</option>
-                    </select>
-                  </label>
-                  <label class="paper-attr">
-                    <span>难度</span>
-                    <select :value="props.difficulty" @change="onDifficultyChange">
-                      <option v-for="level in 5" :key="level" :value="level">{{ level }} · {{ DIFFICULTY_LABELS[level] }}</option>
-                    </select>
-                  </label>
-                </div>
               </section>
             </article>
           </div>
@@ -698,6 +684,35 @@ onMounted(() =>
 .paper-ai-btn:disabled {
   opacity: 0.55;
   cursor: not-allowed;
+}
+.paper-doc-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin-bottom: 14px;
+  padding: 16px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 8px;
+  background: #fafbfe;
+}
+.paper-doc-empty-title {
+  color: #1a1a1a;
+  font-size: 14px;
+  font-weight: 600;
+}
+.paper-doc-empty-desc {
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.paper-recognize-status {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 10px;
+  color: #5145cd;
+  font-size: 12px;
 }
 .paper-answer-status {
   display: flex;
@@ -961,29 +976,6 @@ onMounted(() =>
   background: #f5f3ff;
   color: #5145cd;
   font-size: 12px;
-}
-.paper-attrs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 20px;
-}
-.paper-attr {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: #5b6472;
-  font-size: 13px;
-}
-.paper-attr select {
-  height: 28px;
-  padding: 0 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: #fff;
-  color: #1a1a1a;
-  font-family: inherit;
-  font-size: 13px;
-  outline: none;
 }
 .paper-chip-remove {
   display: grid;
