@@ -422,7 +422,7 @@ onBeforeUnmount(() => {
   <div class="view">
     <div class="cut-main">
       <div class="cut-toolbar">
-        <select v-if="state.papers.length > 1" v-model.number="ui.activePaperId" class="select" style="width: 190px; height: 32px">
+        <select v-if="state.papers.length > 1" v-model.number="ui.activePaperId" class="select toolbar-paper-select">
           <option v-for="p in state.papers" :key="p.id" :value="p.id">{{ p.title }}</option>
         </select>
 
@@ -704,6 +704,13 @@ onBeforeUnmount(() => {
   background: #fff;
   border-bottom: 1px solid var(--border);
   flex-wrap: wrap;
+}
+/* 下拉框固定 32px 高时必须去掉上下内边距，否则 13px 文字会被裁切 */
+.toolbar-paper-select {
+  width: 190px;
+  height: 32px;
+  padding-top: 0;
+  padding-bottom: 0;
 }
 .page-nav {
   display: flex;

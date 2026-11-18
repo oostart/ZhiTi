@@ -6,7 +6,11 @@ export default defineConfig({
   base: './',
   server: {
     port: 5173,
-    strictPort: true
+    strictPort: true,
+    watch: {
+      // 避免监听 cargo 正在写入的构建产物，导致 EBUSY 后开发服务退出
+      ignored: ['**/src-tauri/**']
+    }
   },
   build: {
     target: 'es2020',

@@ -65,6 +65,50 @@ export const ui = reactive<UiState>({
 
 let pendingAnswerSeq = 0
 
+/** 「一键识别」批量任务状态：放在 store 中，切换视图后任务与进度仍然保留 */
+export interface BatchLayoutState {
+  running: boolean
+  stopping: boolean
+  current: string
+  done: number
+  total: number
+  failed: string[]
+  /** 每次启动/重置自增，用于丢弃旧任务迟到的结果 */
+  runId: number
+}
+
+export const batchLayout = reactive<BatchLayoutState>({
+  running: false,
+  stopping: false,
+  current: '',
+  done: 0,
+  total: 0,
+  failed: [],
+  runId: 0
+})
+
+/** 启动一次批量任务并返回本次运行令牌 */
+export function beginBatchLayout(total: number): number {
+  batchLayout.runId += 1
+  batchLayout.running = true
+  batchLayout.stopping = false
+  batchLayout.current = ''
+  batchLayout.done = 0
+  batchLayout.total = total
+  batchLayout.failed = []
+  return batchLayout.runId
+}
+
+export function resetBatchLayout(): void {
+  batchLayout.runId += 1
+  batchLayout.running = false
+  batchLayout.stopping = false
+  batchLayout.current = ''
+  batchLayout.done = 0
+  batchLayout.total = 0
+  batchLayout.failed = []
+}
+
 /** 新增一个待处理答案框，并设为当前操作项 */
 export function addPendingAnswer(paperId: number, region: Region): PendingAnswer {
   pendingAnswerSeq += 1
@@ -188,6 +232,7 @@ export async function initStore(): Promise<void> {
 }
 
 export async function reloadStore(): Promise<void> {
+  resetBatchLayout()
   state.ready = false
   state.papers = []
   state.questions = []

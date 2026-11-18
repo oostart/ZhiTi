@@ -23,6 +23,7 @@ import ContentEditor from '../components/ContentEditor.vue'
 import QuestionPaperView from '../components/QuestionPaperView.vue'
 import {
   addKnowledgePoint,
+  batchLayout,
   deleteQuestion,
   paperOf,
   removePendingAnswer,
@@ -41,6 +42,7 @@ import {
   summarizeContent
 } from '../utils/layout'
 import { buildLayoutImage, buildRegionsImage } from '../utils/layoutImage'
+import { requestStopBatchRecognition, startBatchRecognition } from '../utils/batchRecognition'
 import { mergeContinuationLines } from '../utils/reflow'
 import { answerTag, questionTag } from '../utils/label'
 import { compressImage } from '../utils/image'
@@ -74,14 +76,8 @@ const layoutBusy = ref(false)
 const layoutStatus = ref('')
 const pendingLayout = ref(false)
 const pendingBatch = ref(false)
-const batchBusy = ref(false)
-const batchStop = ref(false)
 const batchKnowledge = ref(false)
 const batchAnalysis = ref(false)
-const batchTotal = ref(0)
-const batchDone = ref(0)
-const batchCurrent = ref('')
-const batchFailed = ref<string[]>([])
 const paperOpen = ref(false)
 let suppressDirty = false
 
@@ -94,6 +90,21 @@ const paperTitle = computed(() => {
   if (!draft.value) return '题目文档'
   return `${questionLabelOf(draft.value)} · 题目文档`
 })
+const draftStoreQuestion = computed(() =>
+  draft.value ? state.questions.find((q) => q.id === draft.value!.id) : undefined
+)
+/** 后台批量识别更新题目后，同步当前打开的文档；有未保存编辑时以用户内容为准 */
+watch(
+  () => draftStoreQuestion.value?.content,
+  (content) => {
+    if (!draft.value || dirty.value || !content) return
+    const latest = draftStoreQuestion.value
+    draft.value.content = JSON.parse(JSON.stringify(content)) as ContentDoc
+    draft.value.text = latest?.text ?? draft.value.text
+    draft.value.knowledge = [...(latest?.knowledge ?? [])]
+    draft.value.analysis = latest?.analysis ?? ''
+  }
+)
 const activePending = computed(() => ui.pendingAnswers.find((item) => item.id === ui.activePendingAnswerId) ?? null)
 /** 当前答案框在其来源试卷内的序号（从 1 开始） */
 const activePendingIndex = computed(() => {
@@ -632,7 +643,10 @@ async function runLayout() {
 }
 
 function startBatchLayout() {
-  if (batchBusy.value) return
+  if (batchLayout.running) {
+    toast('已有识别任务进行中，请等待完成或先停止', 'info')
+    return
+  }
   if (!state.settings.ai.apiKey.trim()) {
     toast('请先在「设置」中填写 AI 接口与密钥', 'warning')
     return
@@ -646,90 +660,15 @@ function startBatchLayout() {
 
 async function runBatchLayout() {
   pendingBatch.value = false
-  if (batchBusy.value) return
+  if (batchLayout.running) return
   await flushDraft(true)
   const targets = [...unrecognizedQuestions.value]
   if (!targets.length) return
-  const withKnowledge = batchKnowledge.value
-  const withAnalysis = batchAnalysis.value
-  batchBusy.value = true
-  batchStop.value = false
-  batchTotal.value = targets.length
-  batchDone.value = 0
-  batchFailed.value = []
-  try {
-    for (let i = 0; i < targets.length; i++) {
-      if (batchStop.value) break
-      const question = targets[i]
-      const label = questionLabelOf(question)
-      batchCurrent.value = label
-      try {
-        const image = await buildLayoutImage(question)
-        const result = await recognizeQuestionLayout(state.settings.ai, image)
-        const patch: Partial<Question> = { content: result.content, text: result.text }
-        const paper = paperOf(question)
-        const subject = paper?.subject ?? ''
-        const grade = paper?.grade ?? ''
-        if (withKnowledge) {
-          batchCurrent.value = `${label} · 生成知识点`
-          try {
-            const names = await recommendKnowledge(
-              state.settings.ai,
-              { text: result.text, subject, grade },
-              state.knowledge.map((k) => k.name)
-            )
-            for (const name of names) {
-              await addKnowledgePoint(name, subject)
-            }
-            patch.knowledge = Array.from(new Set([...question.knowledge, ...names]))
-          } catch {
-            /* 知识点生成失败不影响题目文档结果 */
-          }
-        }
-        if (withAnalysis) {
-          batchCurrent.value = `${label} · 生成题目理解`
-          try {
-            patch.analysis = await analyzeQuestion(state.settings.ai, {
-              text: result.text,
-              subject,
-              grade,
-              answer: question.answer
-            })
-          } catch {
-            /* 题目理解生成失败不影响题目文档结果 */
-          }
-        }
-        await updateQuestion(question.id, patch)
-        if (draft.value?.id === question.id && !dirty.value) {
-          suppressDirty = true
-          draft.value.content = result.content
-          draft.value.text = result.text
-          if (patch.knowledge) draft.value.knowledge = patch.knowledge
-          if (patch.analysis !== undefined) draft.value.analysis = patch.analysis
-          await nextTick()
-          suppressDirty = false
-          dirty.value = false
-        }
-      } catch {
-        batchFailed.value.push(label)
-      }
-      batchDone.value = i + 1
-    }
-    const stopped = batchStop.value
-    const ok = batchDone.value - batchFailed.value.length
-    const failed = batchFailed.value.length
-    const remain = unrecognizedQuestions.value.length
-    const head = stopped ? `已停止批量识别：成功 ${ok} 道` : `批量识别完成：成功 ${ok} 道`
-    const tail = failed ? `，失败 ${failed} 道（${batchFailed.value.slice(0, 3).join('、')}${failed > 3 ? ' 等' : ''}）` : ''
-    const rest = stopped && remain ? `，还有 ${remain} 道未识别` : ''
-    toast(`${head}${tail}${rest}`, failed ? 'warning' : 'success', 6200)
-  } finally {
-    batchBusy.value = false
-    batchCurrent.value = ''
-    batchStop.value = false
-    batchDone.value = 0
-    batchTotal.value = 0
-  }
+  const started = startBatchRecognition(
+    targets.map((q) => q.id),
+    { withKnowledge: batchKnowledge.value, withAnalysis: batchAnalysis.value }
+  )
+  if (!started) toast('已有识别任务进行中，请等待完成或先停止', 'info')
 }
 
 async function confirmDelete() {
@@ -828,12 +767,12 @@ onBeforeUnmount(() => {
             <option value="difficulty">难度从高到低</option>
           </select>
           <button v-if="hasFilters" class="btn btn-ghost btn-sm" @click="resetFilters"><RotateCcw :size="12" /> 重置筛选</button>
-          <button class="btn btn-sm btn-ai" :disabled="batchBusy || !unrecognizedQuestions.length" @click="startBatchLayout">
-            <Loader2 v-if="batchBusy" :size="12" class="spin" />
+          <button class="btn btn-sm btn-ai" :disabled="batchLayout.running || !unrecognizedQuestions.length" @click="startBatchLayout">
+            <Loader2 v-if="batchLayout.running" :size="12" class="spin" />
             <Sparkles v-else :size="12" />
-            {{ batchBusy ? `识别中 ${batchDone}/${batchTotal}` : `AI识别未识别 (${unrecognizedQuestions.length})` }}
+            {{ batchLayout.running ? `识别中 ${batchLayout.done}/${batchLayout.total}` : `一键识别 (${unrecognizedQuestions.length})` }}
           </button>
-          <button v-if="batchBusy" class="btn btn-ghost btn-sm" @click="batchStop = true">
+          <button v-if="batchLayout.running" class="btn btn-ghost btn-sm" @click="requestStopBatchRecognition">
             <X :size="12" /> 停止
           </button>
 
@@ -850,8 +789,8 @@ onBeforeUnmount(() => {
           共 <strong style="color: var(--text)">{{ filtered.length }}</strong> 道题
           <span v-if="ui.exportIds.length"> · 已选 {{ ui.exportIds.length }} 道</span>
         </div>
-        <div v-if="batchBusy" class="hint" style="display: flex; align-items: center; gap: 6px">
-          <Loader2 :size="12" class="spin" /> 正在识别 {{ batchCurrent || '…' }}（{{ batchDone }}/{{ batchTotal }}）
+        <div v-if="batchLayout.running" class="hint" style="display: flex; align-items: center; gap: 6px">
+          <Loader2 :size="12" class="spin" /> 正在识别 {{ batchLayout.current || '…' }}（{{ batchLayout.done }}/{{ batchLayout.total }}）
         </div>
         <div v-else-if="filtered.length" class="hint">第 {{ (pageIndex - 1) * pageSize + 1 }}–{{ Math.min(pageIndex * pageSize, filtered.length) }} 条</div>
       </div>
@@ -1015,7 +954,7 @@ onBeforeUnmount(() => {
       </template>
     </AppModal>
 
-    <AppModal v-if="pendingBatch" title="批量识别未识别的题目？" @close="pendingBatch = false">
+    <AppModal v-if="pendingBatch" title="一键识别未识别的题目？" @close="pendingBatch = false">
       <template #description>
         将对当前筛选结果中 {{ unrecognizedQuestions.length }} 道未识别题目逐题调用视觉模型生成题目文档，已识别的题目会自动跳过，可随时停止。
       </template>

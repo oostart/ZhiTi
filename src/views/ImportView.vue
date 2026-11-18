@@ -215,7 +215,7 @@ function formatDate(iso: string): string {
                 <Loader2 v-if="parsing" :size="24" class="spin" />
                 <FileText v-else :size="24" />
               </div>
-              <div class="drop-title">{{ selectedFile.name }}</div>
+              <div class="drop-title drop-title-file" :title="selectedFile.name">{{ selectedFile.name }}</div>
               <div class="hint">
                 <template v-if="parsing">正在解析页面…</template>
                 <template v-else-if="opened">{{ fileSizeText }} · {{ opened.pageCount }} 页 · 解析完成，点击可更换文件</template>
@@ -374,9 +374,13 @@ function formatDate(iso: string): string {
 }
 .import-grid {
   display: grid;
-  grid-template-columns: 1.15fr 1fr;
+  /* 允许两列都收缩到 0，避免长文件名把栅格撑宽、挤压另一列 */
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
   gap: 16px;
   align-items: start;
+}
+.import-grid > * {
+  min-width: 0;
 }
 .dropzone {
   border: 1.5px dashed #c7cee0;
@@ -413,6 +417,14 @@ function formatDate(iso: string): string {
   margin-bottom: 6px;
   word-break: break-all;
 }
+/* 已选文件名保持单行省略，悬停可查看完整名称，避免撑高或撑宽卡片 */
+.drop-title-file {
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: normal;
+}
 .spin {
   animation: spin 0.8s linear infinite;
 }
@@ -429,6 +441,7 @@ function formatDate(iso: string): string {
   display: flex;
   flex-direction: column;
   margin: 0 -18px;
+  min-width: 0;
 }
 .paper-row {
   display: flex;
@@ -436,6 +449,7 @@ function formatDate(iso: string): string {
   gap: 10px;
   padding: 11px 18px;
   border-bottom: 1px solid #f0f2f7;
+  min-width: 0;
 }
 .paper-row:last-child {
   border-bottom: 0;
@@ -472,6 +486,7 @@ function formatDate(iso: string): string {
   display: flex;
   align-items: center;
   gap: 2px;
+  flex-shrink: 0;
   opacity: 0.75;
   transition: opacity 0.15s;
 }
@@ -480,7 +495,7 @@ function formatDate(iso: string): string {
 }
 @media (max-width: 900px) {
   .import-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 </style>
