@@ -22,7 +22,6 @@
 *.tsbuildinfo
 
 # 本地临时文件与运行时数据
-/ye.png
 /StudySI数据/
 
 # 系统文件
